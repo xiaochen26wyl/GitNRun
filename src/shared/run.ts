@@ -1,0 +1,534 @@
+import type { SecretStatus } from "@shared/secrets";
+
+/**
+ * 專案啟動描述檔（`.gitnrun/run.json`）的型別、驗證、佔位展開、命令列與啟動計畫（純函式）。
+ *
+ * 描述檔來自專案資料夾，內容會隨 git pull 改變，所以一律當成不可信輸入：
+ * 驗證全部 fail-closed，命令列由這裡產生並逐段引用，不經過任何字串拼接成 script 的流程。
+ */
+
+export const RUN_MANIFEST_FILE = ".gitnrun/run.json";
+export const RUN_MANIFEST_VERSION = 1;
+export const RUN_MANIFEST_MAX_BYTES = 64 * 1024;
+
+export const RUN_ROLES = ["backend", "frontend", "desktop"] as const;
+export type RunRole = (typeof RUN_ROLES)[number];
+
+export const RUN_ACTIONS = ["all", "web", "desktop"] as const;
+export type RunAction = (typeof RUN_ACTIONS)[number];
+
+export const MAX_SERVICES = 12;
+export const MAX_COMMAND_ARGS = 40;
+export const MAX_ARG_LENGTH = 500;
+export const MAX_ENV_ENTRIES = 20;
+export const MAX_NEEDS = 8;
+export const MAX_CWD_LENGTH = 200;
+
+export interface RunServiceSpec {
+  name: string;
+  role: RunRole;
+  /** 相對專案資料夾的工作目錄（已正規化，不含 .. 與開頭斜線）。 */
+  cwd: string;
+  /** 程式加參數；每一項都會被單獨引用，不經過 shell 解析。 */
+  command: string[];
+  env: Record<string, string>;
+  /** 是否需要 gitnrun 分配 port（後端與前端必須為 true）。 */
+  port: boolean;
+  needs: string[];
+}
+
+export interface RunManifest {
+  version: typeof RUN_MANIFEST_VERSION;
+  services: RunServiceSpec[];
+}
+
+export type ManifestValidation = { ok: true; manifest: RunManifest } | { ok: false; errors: string[] };
+
+// ---------------------------------------------------------------------------
+// 驗證
+// ---------------------------------------------------------------------------
+
+const CONTROL = /[\u0000-\u001f\u007f]/;
+const SERVICE_NAME = /^[a-z][a-z0-9-]{0,29}$/;
+const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** 會改變行程載入行為或 shell 啟動行為的變數，描述檔不得設定。 */
+const FORBIDDEN_ENV = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "ELECTRON_RUN_AS_NODE",
+  "BASH_ENV",
+  "ENV",
+  "ZDOTDIR",
+  "IFS",
+  "PS4",
+  "PROMPT_COMMAND",
+  "PYTHONPATH",
+  "PYTHONSTARTUP"
+]);
+
+export const isForbiddenEnvName = (name: string): boolean =>
+  FORBIDDEN_ENV.has(name) || name.startsWith("LD_") || name.startsWith("DYLD_");
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean =>
+  Object.keys(value).every((key) => allowed.includes(key));
+
+/** 每次呼叫都建新的 RegExp，避免全域旗標的 lastIndex 狀態在呼叫間殘留。 */
+const placeholderRegex = (): RegExp => /\{(?:([a-z][a-z0-9-]{0,29})\.)?(port|url)\}/g;
+
+interface PlaceholderRef {
+  /** null = 服務自己。 */
+  service: string | null;
+  kind: "port" | "url";
+}
+
+const findPlaceholders = (text: string): PlaceholderRef[] =>
+  [...text.matchAll(placeholderRegex())].map((match) => ({ service: match[1] ?? null, kind: match[2] === "url" ? "url" : "port" }));
+
+/** 去掉合法佔位後還有大括號 = 打錯的佔位（例如 {prot}），一律視為錯誤。 */
+const hasStrayBraces = (text: string): boolean => /[{}]/.test(text.replace(placeholderRegex(), ""));
+
+const normalizeCwd = (raw: string): string | null => {
+  if (raw.length === 0 || raw.length > MAX_CWD_LENGTH || CONTROL.test(raw) || raw.startsWith("/")) {
+    return null;
+  }
+  const segments = raw.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (segments.some((segment) => segment === "..")) {
+    return null;
+  }
+  return segments.length === 0 ? "." : segments.join("/");
+};
+
+const parseService = (raw: unknown, index: number, errors: string[]): RunServiceSpec | null => {
+  const label = `services[${index}]`;
+  const before = errors.length;
+  if (!isRecord(raw)) {
+    errors.push(`${label}：需要是物件`);
+    return null;
+  }
+  if (!hasOnlyKeys(raw, ["name", "role", "cwd", "command", "env", "port", "needs"])) {
+    errors.push(`${label}：有不認得的欄位`);
+  }
+
+  const name = typeof raw.name === "string" && SERVICE_NAME.test(raw.name) ? raw.name : null;
+  if (name === null) {
+    errors.push(`${label}.name：只能用小寫英文、數字與 -，且以英文字母開頭（最長 30 字）`);
+  }
+
+  const role = RUN_ROLES.find((candidate) => candidate === raw.role) ?? null;
+  if (role === null) {
+    errors.push(`${label}.role：需為 ${RUN_ROLES.join("、")} 其中之一`);
+  }
+
+  const cwd = raw.cwd === undefined ? "." : typeof raw.cwd === "string" ? normalizeCwd(raw.cwd) : null;
+  if (cwd === null) {
+    errors.push(`${label}.cwd：需為專案資料夾內的相對路徑（不可為絕對路徑或含 ..）`);
+  }
+
+  let command: string[] = [];
+  if (!Array.isArray(raw.command) || raw.command.length === 0 || raw.command.length > MAX_COMMAND_ARGS) {
+    errors.push(`${label}.command：需為 1～${MAX_COMMAND_ARGS} 個字串的陣列`);
+  } else if (raw.command.some((arg) => typeof arg !== "string" || arg.length > MAX_ARG_LENGTH || CONTROL.test(arg))) {
+    errors.push(`${label}.command：每一項都需為不含控制字元的字串（最長 ${MAX_ARG_LENGTH} 字）`);
+  } else {
+    command = raw.command as string[];
+    const program = command[0] ?? "";
+    if (program.length === 0 || program.startsWith("-")) {
+      errors.push(`${label}.command[0]：程式名稱不可為空，也不可以 - 開頭`);
+    }
+  }
+
+  const env: Record<string, string> = {};
+  if (raw.env !== undefined) {
+    if (!isRecord(raw.env) || Object.keys(raw.env).length > MAX_ENV_ENTRIES) {
+      errors.push(`${label}.env：需為最多 ${MAX_ENV_ENTRIES} 項的物件`);
+    } else {
+      for (const [key, value] of Object.entries(raw.env)) {
+        if (!ENV_NAME.test(key)) {
+          errors.push(`${label}.env.${key}：變數名稱只能用大寫英文、數字與底線`);
+        } else if (isForbiddenEnvName(key)) {
+          errors.push(`${label}.env.${key}：這個變數會改變行程載入行為，不能由描述檔設定`);
+        } else if (typeof value !== "string" || value.length > MAX_ARG_LENGTH || CONTROL.test(value)) {
+          errors.push(`${label}.env.${key}：值需為不含控制字元的字串（最長 ${MAX_ARG_LENGTH} 字）`);
+        } else {
+          env[key] = value;
+        }
+      }
+    }
+  }
+
+  const port = raw.port === undefined ? false : raw.port;
+  if (typeof port !== "boolean") {
+    errors.push(`${label}.port：需為 true 或 false`);
+  }
+  if ((role === "backend" || role === "frontend") && port !== true) {
+    errors.push(`${label}.port：後端與前端必須為 true（狀態偵測與開網頁都依賴 port）`);
+  }
+
+  let needs: string[] = [];
+  if (raw.needs !== undefined) {
+    if (!Array.isArray(raw.needs) || raw.needs.length > MAX_NEEDS || raw.needs.some((item) => typeof item !== "string" || !SERVICE_NAME.test(item))) {
+      errors.push(`${label}.needs：需為最多 ${MAX_NEEDS} 個服務名稱的陣列`);
+    } else {
+      needs = [...new Set(raw.needs as string[])];
+    }
+  }
+
+  if (errors.length > before || name === null || role === null || cwd === null || typeof port !== "boolean") {
+    return null;
+  }
+  return { name, role, cwd, command, env, port, needs };
+};
+
+const findNeedsCycle = (services: readonly RunServiceSpec[]): string | null => {
+  const byName = new Map(services.map((service) => [service.name, service]));
+  const state = new Map<string, "visiting" | "done">();
+  const visit = (name: string): string | null => {
+    const current = state.get(name);
+    if (current === "done") return null;
+    if (current === "visiting") return name;
+    state.set(name, "visiting");
+    for (const dep of byName.get(name)?.needs ?? []) {
+      const hit = visit(dep);
+      if (hit !== null) return hit;
+    }
+    state.set(name, "done");
+    return null;
+  };
+  for (const service of services) {
+    const hit = visit(service.name);
+    if (hit !== null) return hit;
+  }
+  return null;
+};
+
+export const validateManifest = (raw: unknown): ManifestValidation => {
+  const errors: string[] = [];
+  if (!isRecord(raw)) {
+    return { ok: false, errors: ["描述檔需要是 JSON 物件"] };
+  }
+  if (!hasOnlyKeys(raw, ["version", "services"])) {
+    errors.push("最上層有不認得的欄位（只允許 version、services）");
+  }
+  if (raw.version !== RUN_MANIFEST_VERSION) {
+    errors.push(`version：目前只支援 ${RUN_MANIFEST_VERSION}`);
+  }
+  if (!Array.isArray(raw.services) || raw.services.length === 0 || raw.services.length > MAX_SERVICES) {
+    errors.push(`services：需為 1～${MAX_SERVICES} 個服務的陣列`);
+    return { ok: false, errors };
+  }
+
+  const services: RunServiceSpec[] = [];
+  raw.services.forEach((item, index) => {
+    const parsed = parseService(item, index, errors);
+    if (parsed) services.push(parsed);
+  });
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+
+  const byName = new Map<string, RunServiceSpec>();
+  for (const service of services) {
+    if (byName.has(service.name)) {
+      errors.push(`服務名稱重複：${service.name}`);
+    }
+    byName.set(service.name, service);
+  }
+
+  for (const service of services) {
+    for (const dep of service.needs) {
+      if (dep === service.name) errors.push(`${service.name}.needs：不能依賴自己`);
+      else if (!byName.has(dep)) errors.push(`${service.name}.needs：找不到服務 ${dep}`);
+    }
+
+    const texts = [...service.command, ...Object.values(service.env)];
+    for (const text of texts) {
+      if (hasStrayBraces(text)) {
+        errors.push(`${service.name}：「${text.slice(0, 40)}」含有不合法的 { }，佔位只能是 {port}、{url}、{服務.port}、{服務.url}`);
+      }
+      for (const ref of findPlaceholders(text)) {
+        const target = ref.service === null ? service : byName.get(ref.service);
+        if (!target) errors.push(`${service.name}：佔位指向不存在的服務 ${ref.service ?? ""}`);
+        else if (!target.port) errors.push(`${service.name}：佔位指向沒有 port 的服務 ${target.name}`);
+      }
+    }
+  }
+
+  const cycle = findNeedsCycle(services);
+  if (cycle !== null) {
+    errors.push(`needs 有循環依賴（經過 ${cycle}）`);
+  }
+
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, manifest: { version: RUN_MANIFEST_VERSION, services } };
+};
+
+// ---------------------------------------------------------------------------
+// 佔位展開與命令列
+// ---------------------------------------------------------------------------
+
+export const urlForPort = (port: number): string => `http://localhost:${port}`;
+
+export const expandPlaceholders = (text: string, selfName: string, ports: Readonly<Record<string, number>>): string =>
+  text.replace(placeholderRegex(), (_match, service: string | undefined, kind: string) => {
+    const target = service ?? selfName;
+    const port = ports[target];
+    if (port === undefined) {
+      throw new Error(`沒有為 ${target} 配置 port`);
+    }
+    return kind === "url" ? urlForPort(port) : String(port);
+  });
+
+const SAFE_TOKEN = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/** POSIX 單引號引用：單引號本身寫成 '\''。看起來安全的字串維持原樣，讓終端機裡的指令好讀。 */
+export const shellQuote = (value: string): string =>
+  SAFE_TOKEN.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+
+/** `env K=V ... 程式 參數...`；用 env 開頭，zsh、bash、fish 都能執行。 */
+export const buildCommandLine = (command: readonly string[], env: Readonly<Record<string, string>>): string => {
+  const assignments = Object.entries(env).map(([key, value]) => shellQuote(`${key}=${value}`));
+  const parts = [...(assignments.length > 0 ? ["env", ...assignments] : []), ...command.map(shellQuote)];
+  return parts.join(" ");
+};
+
+/** 畫面上顯示用：保留佔位原樣、不引用，讓人看得懂將執行什麼。 */
+export const describeCommand = (spec: Pick<RunServiceSpec, "command" | "env">): string =>
+  [...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`), ...spec.command].join(" ");
+
+// ---------------------------------------------------------------------------
+// 啟動計畫
+// ---------------------------------------------------------------------------
+
+const ROLE_RANK: Record<RunRole, number> = { backend: 0, frontend: 1, desktop: 2 };
+
+/** 動作要啟動的服務（含前置服務），後端在前、前端其次、桌面最後，前置服務一定排在依賴它的服務之前。 */
+export const selectServices = (manifest: RunManifest, action: "all" | "desktop"): RunServiceSpec[] => {
+  const byName = new Map(manifest.services.map((service) => [service.name, service]));
+  const wanted = new Set<string>();
+  const add = (name: string): void => {
+    if (wanted.has(name)) return;
+    wanted.add(name);
+    for (const dep of byName.get(name)?.needs ?? []) add(dep);
+  };
+  for (const service of manifest.services) {
+    if (action === "all" ? service.role !== "desktop" : service.role === "desktop") add(service.name);
+  }
+
+  const sorted = manifest.services
+    .map((service, index) => ({ service, index }))
+    .filter(({ service }) => wanted.has(service.name))
+    .sort((a, b) => ROLE_RANK[a.service.role] - ROLE_RANK[b.service.role] || a.index - b.index)
+    .map(({ service }) => service);
+
+  const ordered: RunServiceSpec[] = [];
+  const visited = new Set<string>();
+  const visit = (service: RunServiceSpec): void => {
+    if (visited.has(service.name)) return;
+    visited.add(service.name);
+    for (const dep of service.needs) {
+      const target = byName.get(dep);
+      if (target) visit(target);
+    }
+    ordered.push(service);
+  };
+  sorted.forEach(visit);
+  return ordered;
+};
+
+/** 需要向作業系統新要的 port 數量：有 port 需求、且沒有可沿用 port 的服務。 */
+export const countFreshPorts = (manifest: RunManifest, reuse: Readonly<Record<string, number>>): number =>
+  manifest.services.filter((service) => service.port && reuse[service.name] === undefined).length;
+
+export interface RunStartItem {
+  name: string;
+  role: RunRole;
+  cwd: string;
+  commandLine: string;
+  port: number | null;
+}
+
+export interface RunStartPlan {
+  /** 整份描述檔所有需要 port 的服務的配置（沿用的與新配的）。 */
+  ports: Record<string, number>;
+  starts: RunStartItem[];
+}
+
+/**
+ * @param reuse 可沿用的 port（服務已在執行或正在啟動）
+ * @param skip 不需要再啟動的服務
+ * @param fresh 新配置的 port，數量需為 countFreshPorts
+ */
+export const planStart = (
+  manifest: RunManifest,
+  action: "all" | "desktop",
+  reuse: Readonly<Record<string, number>>,
+  skip: ReadonlySet<string>,
+  fresh: readonly number[]
+): RunStartPlan => {
+  const queue = [...fresh];
+  const ports: Record<string, number> = {};
+  for (const service of manifest.services) {
+    if (!service.port) continue;
+    const existing = reuse[service.name];
+    const assigned = existing ?? queue.shift();
+    if (assigned === undefined) {
+      throw new Error("新配置的 port 數量不足");
+    }
+    ports[service.name] = assigned;
+  }
+
+  const starts = selectServices(manifest, action)
+    .filter((service) => !skip.has(service.name))
+    .map((service): RunStartItem => {
+      const command = service.command.map((arg) => expandPlaceholders(arg, service.name, ports));
+      const env = Object.fromEntries(Object.entries(service.env).map(([key, value]) => [key, expandPlaceholders(value, service.name, ports)]));
+      return { name: service.name, role: service.role, cwd: service.cwd, commandLine: buildCommandLine(command, env), port: ports[service.name] ?? null };
+    });
+
+  return { ports, starts };
+};
+
+// ---------------------------------------------------------------------------
+// 畫面用的檢視型別與按鈕狀態
+// ---------------------------------------------------------------------------
+
+export type RunServiceState = "running" | "starting" | "stopped";
+export type RunManifestStatus = "ok" | "missing" | "invalid";
+
+export interface RunButtonState {
+  enabled: boolean;
+  /** 不可按時的原因；可按時為 null。 */
+  reason: string | null;
+}
+
+export interface RunButtons {
+  all: RunButtonState;
+  web: RunButtonState;
+  desktop: RunButtonState;
+}
+
+export interface RunServiceView {
+  name: string;
+  role: RunRole;
+  port: number | null;
+  url: string | null;
+  state: RunServiceState;
+  /** 唯讀顯示用的指令（佔位保持原樣）。 */
+  command: string;
+}
+
+export interface RunTargetView {
+  id: string;
+  label: string;
+  folder: string;
+  source: "project" | "folder";
+  manifest: RunManifestStatus;
+  errors: string[];
+  /** 目前的描述檔內容是否已被你確認過。 */
+  trusted: boolean;
+  services: RunServiceView[];
+  buttons: RunButtons;
+  /** dev 通關帳號；沒設定為空字串。帳號不是密鑰，可以完整交給畫面。 */
+  account: string;
+  /** dev 通關密碼的狀態（是否已設、末四碼）；明文永遠不離開主程序。 */
+  passcode: SecretStatus;
+}
+
+export interface RunOverview {
+  iterm: boolean;
+  /** 此電腦能否用系統金鑰保護存密碼；false 時密碼無法儲存，帳號仍可使用。 */
+  vaultAvailable: boolean;
+  targets: RunTargetView[];
+}
+
+export type RunFailureReason =
+  | "unknown-target"
+  | "no-manifest"
+  | "invalid-manifest"
+  | "iterm-missing"
+  | "permission-denied"
+  | "denied"
+  | "not-running"
+  | "nothing-to-do"
+  | "failed";
+
+export type RunActionResult = { ok: true; message: string } | { ok: false; reason: RunFailureReason; message: string };
+
+const enabled: RunButtonState = { enabled: true, reason: null };
+const disabled = (reason: string): RunButtonState => ({ enabled: false, reason });
+
+const isActive = (state: RunServiceState): boolean => state !== "stopped";
+
+export interface ButtonInput {
+  manifest: RunManifestStatus;
+  services: ReadonlyArray<Pick<RunServiceView, "role" | "state"> & { hasPort: boolean }>;
+  iterm: boolean;
+}
+
+export const runButtonStates = (input: ButtonInput): RunButtons => {
+  if (input.manifest !== "ok") {
+    const reason = input.manifest === "missing" ? `沒有 ${RUN_MANIFEST_FILE}` : "描述檔有誤，請修正後再試";
+    return { all: disabled(reason), web: disabled(reason), desktop: disabled(reason) };
+  }
+
+  const serving = input.services.filter((service) => service.role === "backend" || service.role === "frontend");
+  const frontends = input.services.filter((service) => service.role === "frontend");
+  const desktops = input.services.filter((service) => service.role === "desktop");
+
+  let all: RunButtonState;
+  if (serving.length === 0) all = disabled("沒有後端或前端服務");
+  else if (!input.iterm) all = disabled("找不到 iTerm2");
+  else if (serving.every((service) => isActive(service.state))) all = disabled("已在執行中");
+  else all = enabled;
+
+  let web: RunButtonState;
+  if (frontends.length === 0) web = disabled("沒有網頁前端");
+  else if (!frontends.some((service) => service.state === "running")) web = disabled("前端尚未啟動（先按一鍵前後端）");
+  else web = enabled;
+
+  let desktop: RunButtonState;
+  if (desktops.length === 0) desktop = disabled("沒有桌面版");
+  else if (!input.iterm) desktop = disabled("找不到 iTerm2");
+  else if (desktops.every((service) => service.hasPort && isActive(service.state))) desktop = disabled("桌面版已在執行中");
+  else desktop = enabled;
+
+  return { all, web, desktop };
+};
+
+// ---------------------------------------------------------------------------
+// 目標識別
+// ---------------------------------------------------------------------------
+
+const TARGET_ID = /^([pf]):([1-9][0-9]{0,8})$/;
+
+export const isRunTargetId = (value: unknown): value is string => typeof value === "string" && TARGET_ID.test(value);
+
+/** 目標的 dev 通關密碼在保險庫裡的名稱：p:3 → devpass.p3。 */
+export const passcodeSecretName = (targetId: string): string => `devpass.${targetId.replace(":", "")}`;
+
+// ---------------------------------------------------------------------------
+// dev 通關帳號
+// ---------------------------------------------------------------------------
+
+export const MAX_ACCOUNT_LENGTH = 200;
+
+/** 去頭尾空白、限長、不含控制字元；空字串合法（代表沒有帳號），不合法回傳 null。 */
+export const normalizeRunAccount = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > MAX_ACCOUNT_LENGTH || CONTROL.test(trimmed) ? null : trimmed;
+};
+
+export const parseRunTargetId = (value: string): { kind: "p" | "f"; id: number } | null => {
+  const match = TARGET_ID.exec(value);
+  return match ? { kind: match[1] === "f" ? "f" : "p", id: Number(match[2]) } : null;
+};

@@ -1,0 +1,8 @@
+/**
+ * 托盤圖示：32×32 的圓環加圓點，黑色＋透明度的「模板圖示」，macOS 會依選單列的深淺色自動反白。
+ * 以 2x 縮放顯示成 16pt。直接內嵌，不依賴打包後的資源路徑。
+ */
+export const TRAY_ICON_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABYUlEQVR4nO2XMW7CQBBFn6jofABqCupIHICawkfwIaiROAAVlQ9Ab1HbPTU9F6BFUJIQ6VmyIhscIFpH4kvTrHb+n9mZHa/hjX+GATABEmAGzLWZaxP3vBxDBVZAAeyB41X8oh1dK9yT6PMSTCXdASdgeyVfA0tgoS1d27pnp8/0GeG+mWzMMlcsBkZABPS0yLXYPbk+Gzn6jwSQeKQHIJU8auEXuTfVt5DrV5ga/cHjHT+QwFjfg1ytyzG0fhezeES8GkQq16ptYyY2Ue5RPotYrl2bUgyM9GQztan5PURyneS+OScmNs32TvYfQAactcy1JsRyFmo0InGgrL1WTeLfop8/7HwjiJGc+3tlmDnVljeOP6sRLy1r8InkPKrRiLkdu3DA1KEu++op1KEn50WN7gYQvATBmzD4NQw+iAg9iunCx4jQn+MSQR8kdOFJViLYo7SKoM/yKoL9mLzxZ/gCNVrC2ZTpFdsAAAAASUVORK5CYII=";
+
+export const TRAY_ICON_SCALE_FACTOR = 2;

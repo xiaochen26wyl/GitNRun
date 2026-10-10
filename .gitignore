@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+release/
+out/
+
+# Logs
+*.log
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# IDE and OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Maintainer-local AI agent rules (not part of the public repo)
+CLAUDE.md
+AGENTS.md
+CLAUDE.local.md
+.claude/
+.codex/
+.cursor/
+
+# Local dev state (ports hint file written next to projects)
+.dev/

@@ -1,0 +1,90 @@
+{
+  "name": "gitnrun",
+  "productName": "GitNRun",
+  "version": "0.1.0",
+  "description": "Local-only GitHub push monitor with a rules engine, AI commit helper and one-click terminal launcher.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/xiaochen26wyl/GitNRun#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaochen26wyl/GitNRun.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaochen26wyl/GitNRun/issues"
+  },
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "postinstall": "node scripts/fix-electron-install.mjs",
+    "fix:electron": "node scripts/fix-electron-install.mjs",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test:unit": "tsx --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "check:boundary": "tsx scripts/check-boundary.ts",
+    "smoke:build": "node scripts/smoke-build.mjs",
+    "dist:mac": "pnpm build && electron-builder --mac dmg --x64 --arm64 --publish never"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^43.7.9",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4"
+  },
+  "build": {
+    "appId": "com.gitnrun.app",
+    "productName": "GitNRun",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Folder",
+            "CFBundleTypeRole": "Viewer",
+            "LSItemContentTypes": [
+              "public.folder"
+            ],
+            "LSHandlerRank": "Alternate"
+          }
+        ]
+      }
+    },
+    "protocols": [
+      {
+        "name": "GitNRun",
+        "schemes": [
+          "gitnrun"
+        ]
+      }
+    ]
+  },
+  "packageManager": "pnpm@9.15.9"
+}
