@@ -5,6 +5,7 @@ import {
   InvalidIpcInputError,
   MAX_IPC_STRING,
   asBoundedString,
+  asDocumentOpenArgs,
   asEnum,
   asNoArgs,
   asRunAccountArgs,
@@ -110,24 +111,35 @@ describe("run page arguments", () => {
     }
   });
 
-  it("accepts only a target id plus a known action", () => {
-    assert.deepEqual(asRunActionArgs(["p:3", "all"]), ["p:3", "all"]);
-    assert.deepEqual(asRunActionArgs(["f:12", "web"]), ["f:12", "web"]);
-    assert.deepEqual(asRunActionArgs(["p:3", "desktop"]), ["p:3", "desktop"]);
+  it("accepts only a target id plus a known action object", () => {
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "stop" }]), ["p:3", { scope: "project", action: "stop" }]);
+    assert.deepEqual(asRunActionArgs(["f:12", { scope: "service", service: "web", action: "web" }]), [
+      "f:12",
+      { scope: "service", service: "web", action: "web" }
+    ]);
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "flutter-web", action: "hot-reload" }]), [
+      "p:3",
+      { scope: "service", service: "flutter-web", action: "hot-reload" }
+    ]);
   });
 
   it("rejects extra, missing, mistyped or unknown arguments", () => {
     for (const args of [
       [],
       ["p:3"],
-      ["p:3", "all", "extra"],
+      ["p:3", { scope: "service", service: "web", action: "start" }, "extra"],
+      ["p:3", "all"],
       ["p:3", "rm -rf /"],
-      ["p:3", "ALL"],
-      ["../../etc", "all"],
-      ["p:0", "all"],
-      [3, "all"],
+      ["p:3", { scope: "project", action: "start" }],
+      ["p:3", { scope: "project", action: "stop", service: "web" }],
+      ["p:3", { scope: "service", service: "Web", action: "start" }],
+      ["p:3", { scope: "service", service: "web", action: "desktop" }],
+      ["p:3", { scope: "service", service: "web", action: "start", command: "pnpm dev" }],
+      ["../../etc", { scope: "service", service: "web", action: "start" }],
+      ["p:0", { scope: "service", service: "web", action: "start" }],
+      [3, { scope: "service", service: "web", action: "start" }],
       ["p:3", 1],
-      [{ id: "p:3" }, "all"]
+      [{ id: "p:3" }, { scope: "service", service: "web", action: "start" }]
     ]) {
       assert.equal(asRunActionArgs(args), null, JSON.stringify(args));
     }
@@ -163,6 +175,20 @@ describe("run page arguments", () => {
       [3, "alice"]
     ]) {
       assert.equal(asRunAccountArgs(args), null, JSON.stringify(args));
+    }
+  });
+});
+
+describe("asDocumentOpenArgs", () => {
+  it("accepts saved shortcut ids (positive) and auto-discovered README ids (negative)", () => {
+    assert.deepEqual(asDocumentOpenArgs([1]), [1]);
+    assert.deepEqual(asDocumentOpenArgs([-1]), [-1]);
+    assert.deepEqual(asDocumentOpenArgs([-37]), [-37]);
+  });
+
+  it("rejects zero, non-integers, non-numbers and the wrong arity", () => {
+    for (const args of [[], [0], [1.5], [-0.5], ["1"], [null], [Number.NaN], [Infinity], [2 ** 31], [-(2 ** 31)], [1, 2]]) {
+      assert.equal(asDocumentOpenArgs(args), null, JSON.stringify(args));
     }
   });
 });

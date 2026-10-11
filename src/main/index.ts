@@ -1,4 +1,6 @@
-import { app, BrowserWindow } from "electron";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { app, BrowserWindow, nativeImage } from "electron";
 import { IPC, type AppInfo } from "@shared/ipc";
 import { registerAiIpc } from "@main/ai/ipc";
 import { createAnthropicClient, createOpenAiClient } from "@main/ai/providers";
@@ -10,6 +12,10 @@ import { registerAppSettingsIpc } from "@main/app-settings-ipc";
 import { copySecretToClipboard } from "@main/clipboard-secret";
 import { backupSoon, closeDataLayer, getBackupDir, initDataLayer } from "@main/data-layer";
 import { markInterruptedExecutions } from "@main/db/rule-executions-repo";
+import { registerDocumentIpc } from "@main/documents/ipc";
+import { createDocumentRuntime } from "@main/documents/runtime";
+import { createGitLiteHandlers } from "@main/git-lite/handlers";
+import { registerGitLiteIpc } from "@main/git-lite/ipc";
 import { runGit } from "@main/git/run-git";
 import { readProjectVersion } from "@main/git/version-source";
 import { handleIpc } from "@main/ipc";
@@ -20,7 +26,7 @@ import { createLauncherRuntime } from "@main/launcher/runtime";
 import { registerRunIpc } from "@main/run/ipc";
 import { createRunRuntime } from "@main/run/runtime";
 import { createLogger, type Logger } from "@main/logger";
-import { createEventPipeline, createMonitorRuntime, emitMonitorChange, onMonitorChange } from "@main/monitor/runtime";
+import { createEventPipeline, createMonitorRuntime, emitMonitorChange } from "@main/monitor/runtime";
 import { installProcessGuards } from "@main/reliability/process-guards";
 import { createRulesHandlers } from "@main/rules/handlers";
 import { registerRulesIpc } from "@main/rules/ipc";
@@ -56,11 +62,18 @@ const registerAppInfoIpc = (): void => {
   }));
 };
 
-/** 視窗顯示之後才開始輪詢（啟動時間 <2 秒的做法）；視窗一直沒顯示也最晚這個時間點開始。 */
-const MONITOR_START_FALLBACK_MS = 3_000;
+/** 開發模式的 Dock 會顯示 Electron 圖示，改成專案 logo；打包版由 build/icon.icns 負責。 */
+const applyDevDockIcon = (): void => {
+  if (app.isPackaged || !app.dock) return;
+  const iconPath = join(__dirname, "../../build/icon.png");
+  if (existsSync(iconPath)) {
+    app.dock.setIcon(nativeImage.createFromPath(iconPath));
+  }
+};
 
 const bootstrap = (): void => {
   installSessionLockdown();
+  applyDevDockIcon();
 
   let logger: Logger | null = null;
   installProcessGuards({ getLogger: () => logger });
@@ -107,16 +120,12 @@ const bootstrap = (): void => {
   const launcher = createLauncherRuntime({
     db,
     logger: log,
-    showMainWindow,
-    monitor,
-    onMonitorChange: (listener) => onMonitorChange(listener),
     externalGate,
     onConfigChanged: backupSoon
   });
-  // 設定類資料變動：排程備份，並重建托盤選單（專案、映射可能改了）。
+  // 設定類資料變動：排程備份。
   const onConfigChanged = (): void => {
     backupSoon();
-    launcher.refreshTray();
   };
 
   registerAppInfoIpc();
@@ -126,6 +135,8 @@ const bootstrap = (): void => {
   registerRulesIpc(createRulesHandlers({ db, engine, vault, onConfigChanged }));
   registerLauncherIpc(launcher.handlers);
   registerRunIpc(createRunRuntime({ db, logger: log, vault, copySecret: copySecretToClipboard }));
+  registerDocumentIpc(createDocumentRuntime({ db, now: Date.now, onConfigChanged }));
+  registerGitLiteIpc(createGitLiteHandlers({ db, runGit, vault, fetchFn: fetch }));
   registerWebhookIpc(
     createWebhookAdminHandlers({ db, vault, receiver: webhookReceiver, copySecret: copySecretToClipboard, now: Date.now, onConfigChanged })
   );
@@ -143,27 +154,11 @@ const bootstrap = (): void => {
       onConfigChanged,
       onRestored: () => {
         monitor.reloadProjects();
-        launcher.refreshTray();
       }
     })
   );
 
-  let backgroundServicesStarted = false;
-  const startBackgroundServices = (): void => {
-    if (backgroundServicesStarted) return;
-    backgroundServicesStarted = true;
-    monitor.start();
-    // 選配功能，預設關閉；使用者開啟過才會在這裡啟動本機接收端。
-    void webhookReceiver.apply();
-  };
-
-  // 開機登入時只留托盤，不彈出視窗；平常啟動則顯示視窗，並等它畫好之後才開始輪詢。
-  if (app.getLoginItemSettings().wasOpenedAtLogin) {
-    startBackgroundServices();
-  } else {
-    createMainWindow().once("ready-to-show", startBackgroundServices);
-    setTimeout(startBackgroundServices, MONITOR_START_FALLBACK_MS).unref();
-  }
+  createMainWindow();
 
   app.on("will-quit", () => launcher.dispose());
   app.on("before-quit", () => {
@@ -185,7 +180,6 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  // 關閉視窗只是銷毀畫面（渲染程序），監視、規則、托盤與快捷鍵都留在主程序裡繼續運作；
-  // 要結束請用托盤選單的「結束」或 Cmd+Q。
+  // 關閉視窗只是銷毀畫面（渲染程序），快捷鍵留在主程序裡繼續運作；要結束請用 Cmd+Q。
   app.on("window-all-closed", () => undefined);
 }

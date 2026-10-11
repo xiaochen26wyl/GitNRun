@@ -97,6 +97,24 @@ describe("run page settings", () => {
     assert.ok(keys.includes("run.folders"));
     assert.equal(isSecretLikeSettingKey("run.accounts"), true);
   });
+
+  it("keeps document shortcuts in the local settings backup", () => {
+    const db = createTestDb();
+    setSetting(db, "documents.shortcuts", [
+      { id: 1, label: "Spec", path: "/Users/me/spec.md", opener: "cursor", createdAt: 1, updatedAt: 1 }
+    ]);
+
+    const backup = exportConfig(db);
+    assert.deepEqual(backup.settings.find((setting) => setting.key === "documents.shortcuts")?.value, [
+      { id: 1, label: "Spec", path: "/Users/me/spec.md", opener: "cursor", createdAt: 1, updatedAt: 1 }
+    ]);
+
+    const target = createTestDb();
+    importConfig(target, JSON.parse(JSON.stringify(backup)));
+    assert.deepEqual(exportConfig(target).settings.find((setting) => setting.key === "documents.shortcuts")?.value, [
+      { id: 1, label: "Spec", path: "/Users/me/spec.md", opener: "cursor", createdAt: 1, updatedAt: 1 }
+    ]);
+  });
 });
 
 describe("importConfig", () => {

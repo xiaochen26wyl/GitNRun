@@ -106,14 +106,15 @@ export const GeneralPanel = () => {
           checked={settings.openAtLogin}
           onChange={(event) => void run(() => window.gitNRun.saveAppSettings({ openAtLogin: event.target.checked }), "已儲存")}
         />
-        登入 macOS 時自動啟動（只在托盤執行，不彈出視窗）
+        登入 macOS 時自動啟動（在背景執行，不彈出視窗）
       </label>
       {settings.openAtLoginSupported ? null : <p className="muted">開發模式無法設定；請在打包後的 App 使用。</p>}
 
       <h3>設定備份</h3>
       <p className="muted">
-        備份包含專案、規則、終端機映射、分支命名規則與設定，<strong>不包含任何金鑰</strong>（換機或重裝後要重新輸入）。還原後規則一律回到「寫入動作需確認」。
-        啟動時與設定變更後會自動備份，保留最近 10 份。
+        備份只保存在這台電腦的 app 資料夾，沒有雲端同步，也不會推到 GitHub 或其他服務。備份包含專案、文件捷徑、規則、終端機映射、分支命名規則與設定，
+        <strong>不包含任何金鑰</strong>、dev 通關密碼或已確認指令記錄。換機或重灌後如果沒有保留本機資料夾，就需要重新設定。還原後規則一律回到「寫入動作需確認」。
+        啟動時與設定變更後會自動建立本機備份，保留最近 10 份。
       </p>
       <div className="row-actions">
         <button type="button" onClick={() => void run(async () => void (await window.gitNRun.backupNow()), "已備份（內容沒有變動時不會新增檔案）")}>

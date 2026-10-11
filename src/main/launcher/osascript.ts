@@ -68,6 +68,29 @@ export const ITERM_TABS_SCRIPT = [
   "end run"
 ] as const;
 
+/** 對 GitNRun 命名的 iTerm2 session 送出固定文字。argv 第一個是文字，其餘是 session 名稱。 */
+export const ITERM_WRITE_TEXT_SCRIPT = [
+  "on run argv",
+  "set theText to item 1 of argv",
+  "set wantedNames to {}",
+  "repeat with i from 2 to count of argv",
+  "set end of wantedNames to item i of argv",
+  "end repeat",
+  'tell application id "com.googlecode.iterm2"',
+  "activate",
+  "repeat with aWindow in windows",
+  "repeat with aTab in tabs of aWindow",
+  "repeat with aSession in sessions of aTab",
+  "if wantedNames contains (name of aSession as text) then",
+  "tell aSession to write text theText newline false",
+  "end if",
+  "end repeat",
+  "end repeat",
+  "end repeat",
+  "end tell",
+  "end run"
+] as const;
+
 export const SCRIPTS: Record<ScriptableTerminal, readonly string[]> = {
   terminal: TERMINAL_SCRIPT,
   iterm: ITERM_SCRIPT
@@ -82,11 +105,21 @@ export interface ItermTab {
   command: string;
 }
 
+export const runSessionName = (targetId: string, serviceName: string): string => `gitnrun ${targetId} ${serviceName}`;
+
 /** 在 iTerm2 一次開出多個分頁的 osascript 完整參數。 */
 export const buildItermTabsArgs = (tabs: readonly ItermTab[]): string[] => [
   ...ITERM_TABS_SCRIPT.flatMap((line) => ["-e", line]),
   "--",
   ...tabs.flatMap((tab) => [tab.dir, tab.name, tab.command])
+];
+
+/** 對既有 iTerm2 session 送出文字；文字與 session 名稱只透過 argv 傳入。 */
+export const buildItermWriteTextArgs = (text: "r" | "R", sessionNames: readonly string[]): string[] => [
+  ...ITERM_WRITE_TEXT_SCRIPT.flatMap((line) => ["-e", line]),
+  "--",
+  text,
+  ...sessionNames
 ];
 
 /** osascript 的完整參數：每行 script 一個 -e，最後是 argv（資料夾、指令）。 */

@@ -27,13 +27,9 @@ const getPlatformPath = () => {
     case "darwin":
       return "Electron.app/Contents/MacOS/Electron";
     case "linux":
-    case "freebsd":
-    case "openbsd":
       return "electron";
-    case "win32":
-      return "electron.exe";
     default:
-      throw new Error(`Electron builds are not available on platform: ${platform()}`);
+      throw new Error(`GitNRun only supports macOS and Linux; current platform is ${platform()}`);
   }
 };
 
@@ -67,14 +63,7 @@ const resolveDownloadPlatformArch = () => {
 
 const getDefaultCacheDir = () => {
   if (process.env.electron_config_cache) return process.env.electron_config_cache;
-  switch (platform()) {
-    case "darwin":
-      return join(homedir(), "Library", "Caches", "electron");
-    case "win32":
-      return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "electron", "Cache");
-    default:
-      return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "electron");
-  }
+  return platform() === "darwin" ? join(homedir(), "Library", "Caches", "electron") : join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "electron");
 };
 
 const findCachedZip = (version) => {
@@ -97,23 +86,7 @@ const findCachedZip = (version) => {
 };
 
 const extractZip = (zipPath, distDir) => {
-  if (platform() === "win32") {
-    // Paths travel in the environment rather than interpolated into the command
-    // string: a directory containing a single quote would otherwise break out of
-    // the quoting and change what PowerShell executes.
-    execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Expand-Archive -LiteralPath $env:PW_ZIP_PATH -DestinationPath $env:PW_DIST_DIR -Force"
-      ],
-      { env: { ...process.env, PW_ZIP_PATH: zipPath, PW_DIST_DIR: distDir } }
-    );
-  } else {
-    execFileSync("unzip", ["-o", "-q", zipPath, "-d", distDir]);
-  }
+  execFileSync("unzip", ["-o", "-q", zipPath, "-d", distDir]);
 };
 
 const main = async () => {

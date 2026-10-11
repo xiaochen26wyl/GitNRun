@@ -46,7 +46,7 @@ const stack = (): RunManifest =>
   parsed(
     manifestOf(
       service({ name: "api", env: { DEV_PORT: "{port}", FRONTEND_URL: "{web.url}" } }),
-      service({ name: "web", role: "frontend", command: ["pnpm", "dev"], env: { PORT: "{port}", API_BASE: "{api.url}" } }),
+      service({ name: "web", role: "frontend", command: ["pnpm", "dev"], needs: ["api"], env: { PORT: "{port}", API_BASE: "{api.url}" } }),
       service({ name: "panel", role: "desktop", port: false, command: ["pnpm", "dev:desktop"], needs: ["api"], env: { API: "{api.url}" } })
     )
   );
@@ -187,6 +187,21 @@ describe("selectServices and planStart", () => {
     assert.deepEqual(selectServices(stack(), "desktop").map((item) => item.name), ["api", "panel"]);
   });
 
+  it("a service-scoped start pulls only that service and its needs", () => {
+    assert.deepEqual(selectServices(stack(), { service: "web" }).map((item) => item.name), ["api", "web"]);
+  });
+
+  it("service-scoped frontend starts do not pull sibling frontends", () => {
+    const manifest = parsed(
+      manifestOf(
+        service({ name: "api" }),
+        service({ name: "fictionpurr", role: "frontend", needs: ["api"] }),
+        service({ name: "sparkpurr", role: "frontend", needs: ["api"] })
+      )
+    );
+    assert.deepEqual(selectServices(manifest, { service: "sparkpurr" }).map((item) => item.name), ["api", "sparkpurr"]);
+  });
+
   it("orders a needed service before the one that needs it regardless of declaration order", () => {
     const manifest = parsed(manifestOf(service({ name: "api", needs: ["db"] }), service({ name: "db" })));
     assert.deepEqual(selectServices(manifest, "all").map((item) => item.name), ["db", "api"]);
@@ -220,20 +235,21 @@ describe("selectServices and planStart", () => {
 });
 
 describe("runButtonStates", () => {
-  const web = { role: "frontend" as const, hasPort: true };
-  const api = { role: "backend" as const, hasPort: true };
-  const panel = { role: "desktop" as const, hasPort: true };
+  const web = { role: "frontend" as const, hasPort: true, hotReloadable: false, hasSession: false };
+  const api = { role: "backend" as const, hasPort: true, hotReloadable: false, hasSession: false };
+  const panel = { role: "desktop" as const, hasPort: true, hotReloadable: false, hasSession: false };
 
   it("disables everything with a reason when there is no usable manifest", () => {
     const missing = runButtonStates({ manifest: "missing", services: [], iterm: true });
-    assert.deepEqual([missing.all.enabled, missing.web.enabled, missing.desktop.enabled], [false, false, false]);
-    assert.match(missing.all.reason ?? "", /run\.json/);
+    assert.deepEqual([missing.all.enabled, missing.restart.enabled, missing.stop.enabled, missing.web.enabled, missing.desktop.enabled], [false, false, false, false, false]);
+    assert.equal(missing.all.reason, "找不到可啟動服務");
     assert.match(runButtonStates({ manifest: "invalid", services: [], iterm: true }).web.reason ?? "", /有誤/);
   });
 
   it("explains why a button is unavailable", () => {
     const noDesktop = runButtonStates({ manifest: "ok", services: [{ ...api, state: "stopped" }, { ...web, state: "stopped" }], iterm: true });
     assert.equal(noDesktop.all.enabled, true);
+    assert.equal(noDesktop.stop.reason, "尚未啟動");
     assert.equal(noDesktop.web.reason, "前端尚未啟動（先按一鍵前後端）");
     assert.equal(noDesktop.desktop.reason, "沒有桌面版");
 
@@ -246,6 +262,8 @@ describe("runButtonStates", () => {
   it("needs iTerm2 for the launching buttons but not for opening the web page", () => {
     const states = runButtonStates({ manifest: "ok", services: [{ ...api, state: "running" }, { ...web, state: "running" }, { ...panel, state: "stopped" }], iterm: false });
     assert.equal(states.all.reason, "找不到 iTerm2");
+    assert.equal(states.restart.reason, "找不到 iTerm2");
+    assert.equal(states.stop.enabled, true);
     assert.equal(states.desktop.reason, "找不到 iTerm2");
     assert.equal(states.web.enabled, true);
   });
@@ -253,13 +271,33 @@ describe("runButtonStates", () => {
   it("disables buttons for things that are already running", () => {
     const states = runButtonStates({ manifest: "ok", services: [{ ...api, state: "running" }, { ...web, state: "starting" }, { ...panel, state: "running" }], iterm: true });
     assert.equal(states.all.reason, "已在執行中");
+    assert.equal(states.restart.enabled, true);
+    assert.equal(states.stop.enabled, true);
     assert.equal(states.desktop.reason, "桌面版已在執行中");
     assert.equal(states.web.enabled, false);
   });
 
   it("never disables a desktop service that cannot be detected", () => {
-    const states = runButtonStates({ manifest: "ok", services: [{ role: "desktop", hasPort: false, state: "stopped" }], iterm: true });
+    const states = runButtonStates({ manifest: "ok", services: [{ ...panel, hasPort: false, state: "stopped" }], iterm: true });
     assert.equal(states.desktop.enabled, true);
+  });
+
+  it("enables Flutter hot controls only after a Flutter run service starts", () => {
+    const stopped = runButtonStates({
+      manifest: "ok",
+      services: [{ ...web, state: "stopped", hotReloadable: true }],
+      iterm: true
+    });
+    assert.equal(stopped.hotReload.reason, "Flutter 尚未啟動");
+    assert.equal(stopped.hotRestart.reason, "Flutter 尚未啟動");
+
+    const running = runButtonStates({
+      manifest: "ok",
+      services: [{ ...web, state: "running", hotReloadable: true }],
+      iterm: true
+    });
+    assert.equal(running.hotReload.enabled, true);
+    assert.equal(running.hotRestart.enabled, true);
   });
 });
 
@@ -298,6 +336,54 @@ describe("loadManifest", () => {
 
   it("reports a missing manifest", async () => {
     assert.deepEqual(await loadManifest("/work/app", fakeFs({})), { status: "missing" });
+  });
+
+  it("infers services from package.json scripts when no manifest file exists", async () => {
+    const packageFile = "/work/app/package.json";
+    const result = await loadManifest(
+      "/work/app",
+      fakeFs({
+        [packageFile]: JSON.stringify({
+          packageManager: "pnpm@9.15.9",
+          scripts: {
+            "dev:api": "tsx api.ts",
+            "dev:web": "vite",
+            "dev:desktop": "electron-vite dev"
+          }
+        })
+      })
+    );
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.status === "ok" ? result.manifest.services.map((item) => [item.name, item.role, item.command, item.env, item.needs]) : [],
+      [
+        ["api", "backend", ["pnpm", "run", "dev:api"], { PORT: "{port}", DEV_PORT: "{port}" }, []],
+        [
+          "web",
+          "frontend",
+          ["pnpm", "run", "dev:web"],
+          { PORT: "{port}", DEV_PORT: "{port}", API_BASE_URL: "{api.url}", VITE_API_BASE_URL: "{api.url}" },
+          []
+        ],
+        ["desktop", "desktop", ["pnpm", "run", "dev:desktop"], {}, ["api"]]
+      ]
+    );
+  });
+
+  it("infers a Flutter web service from pubspec.yaml when no package scripts exist", async () => {
+    const result = await loadManifest(
+      "/work/app",
+      fakeFs({
+        "/work/app/pubspec.yaml": "name: mobile_app\n"
+      })
+    );
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(
+      result.status === "ok" ? result.manifest.services.map((item) => [item.name, item.role, item.command, item.port]) : [],
+      [["flutter", "frontend", ["flutter", "run", "-d", "chrome", "--web-port", "{port}"], true]]
+    );
   });
 
   it("does not read a manifest from the retired folder name", async () => {

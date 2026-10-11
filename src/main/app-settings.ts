@@ -21,9 +21,9 @@ export interface AppSettingsDeps {
   backupDir: string;
   loginItem: LoginItemApi;
   now: () => number;
-  /** 設定類資料改變（觸發備份、重建托盤）。 */
+  /** 設定類資料改變（觸發備份）。 */
   onConfigChanged: () => void;
-  /** 還原了備份：專案與映射可能都變了，監視器與托盤要重新載入。 */
+  /** 還原了備份：專案與映射可能都變了，監視器要重新載入。 */
   onRestored: () => void;
 }
 

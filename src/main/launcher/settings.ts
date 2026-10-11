@@ -15,13 +15,14 @@ export interface StoredLauncherSettings {
 }
 
 /** 讀設定時一律重新驗證，資料庫裡被改壞的值會退回預設，不會讓啟動流程出錯。 */
-export const readLauncherSettings = (db: Db): StoredLauncherSettings => {
+export const readLauncherSettings = (db: Db, defaultTerminal: string = TERMINAL_APP_TERMINAL): StoredLauncherSettings => {
+  const fallbackTerminal = isValidTerminalChoice(defaultTerminal) && defaultTerminal !== "default" ? defaultTerminal : TERMINAL_APP_TERMINAL;
   const shortcut = getSetting<unknown>(db, LAUNCHER_KEYS.shortcut, DEFAULT_SHORTCUT);
-  const terminal = getSetting<unknown>(db, LAUNCHER_KEYS.defaultTerminal, TERMINAL_APP_TERMINAL);
+  const terminal = getSetting<unknown>(db, LAUNCHER_KEYS.defaultTerminal, fallbackTerminal);
   const selected = getSetting<unknown>(db, LAUNCHER_KEYS.selectedProjectId, null);
   return {
     shortcut: shortcut === null ? null : isValidAccelerator(shortcut) ? shortcut : DEFAULT_SHORTCUT,
-    defaultTerminal: typeof terminal === "string" && isValidTerminalChoice(terminal) && terminal !== "default" ? terminal : TERMINAL_APP_TERMINAL,
+    defaultTerminal: typeof terminal === "string" && isValidTerminalChoice(terminal) && terminal !== "default" ? terminal : fallbackTerminal,
     selectedProjectId: typeof selected === "number" && Number.isSafeInteger(selected) && selected > 0 ? selected : null
   };
 };

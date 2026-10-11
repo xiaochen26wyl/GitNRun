@@ -14,8 +14,13 @@ export const RUN_MANIFEST_MAX_BYTES = 64 * 1024;
 export const RUN_ROLES = ["backend", "frontend", "desktop"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
-export const RUN_ACTIONS = ["all", "web", "desktop"] as const;
-export type RunAction = (typeof RUN_ACTIONS)[number];
+export const RUN_PROJECT_ACTIONS = ["stop"] as const;
+export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web", "hot-reload", "hot-restart"] as const;
+export type RunProjectActionName = (typeof RUN_PROJECT_ACTIONS)[number];
+export type RunServiceActionName = (typeof RUN_SERVICE_ACTIONS)[number];
+export type RunAction =
+  | { scope: "project"; action: RunProjectActionName }
+  | { scope: "service"; service: string; action: RunServiceActionName };
 
 export const MAX_SERVICES = 12;
 export const MAX_COMMAND_ARGS = 40;
@@ -51,6 +56,8 @@ export type ManifestValidation = { ok: true; manifest: RunManifest } | { ok: fal
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,29}$/;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+export const isRunServiceName = (value: unknown): value is string => typeof value === "string" && SERVICE_NAME.test(value);
 
 /** 會改變行程載入行為或 shell 啟動行為的變數，描述檔不得設定。 */
 const FORBIDDEN_ENV = new Set([
@@ -304,23 +311,35 @@ export const buildCommandLine = (command: readonly string[], env: Readonly<Recor
 export const describeCommand = (spec: Pick<RunServiceSpec, "command" | "env">): string =>
   [...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`), ...spec.command].join(" ");
 
+export const isFlutterRunCommand = (command: readonly string[]): boolean => {
+  const index = command.findIndex((part) => part === "flutter");
+  return index >= 0 && command[index + 1] === "run";
+};
+
 // ---------------------------------------------------------------------------
 // 啟動計畫
 // ---------------------------------------------------------------------------
 
 const ROLE_RANK: Record<RunRole, number> = { backend: 0, frontend: 1, desktop: 2 };
 
+export type RunStartSelection = "all" | "desktop" | { service: string };
+
 /** 動作要啟動的服務（含前置服務），後端在前、前端其次、桌面最後，前置服務一定排在依賴它的服務之前。 */
-export const selectServices = (manifest: RunManifest, action: "all" | "desktop"): RunServiceSpec[] => {
+export const selectServices = (manifest: RunManifest, selection: RunStartSelection): RunServiceSpec[] => {
   const byName = new Map(manifest.services.map((service) => [service.name, service]));
   const wanted = new Set<string>();
   const add = (name: string): void => {
     if (wanted.has(name)) return;
+    if (!byName.has(name)) return;
     wanted.add(name);
     for (const dep of byName.get(name)?.needs ?? []) add(dep);
   };
-  for (const service of manifest.services) {
-    if (action === "all" ? service.role !== "desktop" : service.role === "desktop") add(service.name);
+  if (typeof selection === "object") {
+    add(selection.service);
+  } else {
+    for (const service of manifest.services) {
+      if (selection === "all" ? service.role !== "desktop" : service.role === "desktop") add(service.name);
+    }
   }
 
   const sorted = manifest.services
@@ -369,7 +388,7 @@ export interface RunStartPlan {
  */
 export const planStart = (
   manifest: RunManifest,
-  action: "all" | "desktop",
+  selection: RunStartSelection,
   reuse: Readonly<Record<string, number>>,
   skip: ReadonlySet<string>,
   fresh: readonly number[]
@@ -386,7 +405,7 @@ export const planStart = (
     ports[service.name] = assigned;
   }
 
-  const starts = selectServices(manifest, action)
+  const starts = selectServices(manifest, selection)
     .filter((service) => !skip.has(service.name))
     .map((service): RunStartItem => {
       const command = service.command.map((arg) => expandPlaceholders(arg, service.name, ports));
@@ -412,8 +431,21 @@ export interface RunButtonState {
 
 export interface RunButtons {
   all: RunButtonState;
+  restart: RunButtonState;
+  stop: RunButtonState;
   web: RunButtonState;
   desktop: RunButtonState;
+  hotReload: RunButtonState;
+  hotRestart: RunButtonState;
+}
+
+export interface RunServiceButtons {
+  start: RunButtonState;
+  restart: RunButtonState;
+  stop: RunButtonState;
+  web: RunButtonState;
+  hotReload: RunButtonState;
+  hotRestart: RunButtonState;
 }
 
 export interface RunServiceView {
@@ -422,15 +454,17 @@ export interface RunServiceView {
   port: number | null;
   url: string | null;
   state: RunServiceState;
+  hotReloadable: boolean;
   /** 唯讀顯示用的指令（佔位保持原樣）。 */
   command: string;
+  buttons: RunServiceButtons;
 }
 
 export interface RunTargetView {
   id: string;
   label: string;
   folder: string;
-  source: "project" | "folder";
+  source: "project" | "folder" | "discovered";
   manifest: RunManifestStatus;
   errors: string[];
   /** 目前的描述檔內容是否已被你確認過。 */
@@ -452,6 +486,7 @@ export interface RunOverview {
 
 export type RunFailureReason =
   | "unknown-target"
+  | "unknown-service"
   | "no-manifest"
   | "invalid-manifest"
   | "iterm-missing"
@@ -470,25 +505,44 @@ const isActive = (state: RunServiceState): boolean => state !== "stopped";
 
 export interface ButtonInput {
   manifest: RunManifestStatus;
-  services: ReadonlyArray<Pick<RunServiceView, "role" | "state"> & { hasPort: boolean }>;
+  services: ReadonlyArray<Pick<RunServiceView, "role" | "state" | "hotReloadable"> & { hasPort: boolean; hasSession: boolean }>;
   iterm: boolean;
 }
 
 export const runButtonStates = (input: ButtonInput): RunButtons => {
   if (input.manifest !== "ok") {
-    const reason = input.manifest === "missing" ? `沒有 ${RUN_MANIFEST_FILE}` : "描述檔有誤，請修正後再試";
-    return { all: disabled(reason), web: disabled(reason), desktop: disabled(reason) };
+    const reason = input.manifest === "missing" ? "找不到可啟動服務" : "啟動設定有誤，請修正後再試";
+    return {
+      all: disabled(reason),
+      restart: disabled(reason),
+      stop: disabled(reason),
+      web: disabled(reason),
+      desktop: disabled(reason),
+      hotReload: disabled(reason),
+      hotRestart: disabled(reason)
+    };
   }
 
   const serving = input.services.filter((service) => service.role === "backend" || service.role === "frontend");
   const frontends = input.services.filter((service) => service.role === "frontend");
   const desktops = input.services.filter((service) => service.role === "desktop");
+  const flutter = input.services.filter((service) => service.hotReloadable);
+  const activeFlutter = flutter.filter((service) => isActive(service.state) || service.hasSession);
 
   let all: RunButtonState;
   if (serving.length === 0) all = disabled("沒有後端或前端服務");
   else if (!input.iterm) all = disabled("找不到 iTerm2");
   else if (serving.every((service) => isActive(service.state))) all = disabled("已在執行中");
   else all = enabled;
+
+  let restart: RunButtonState;
+  if (serving.length === 0) restart = disabled("沒有後端或前端服務");
+  else if (!input.iterm) restart = disabled("找不到 iTerm2");
+  else if (!serving.some((service) => isActive(service.state))) restart = disabled("尚未啟動");
+  else restart = enabled;
+
+  const active = input.services.filter((service) => isActive(service.state) && service.hasPort);
+  const stop = active.length > 0 ? enabled : disabled("尚未啟動");
 
   let web: RunButtonState;
   if (frontends.length === 0) web = disabled("沒有網頁前端");
@@ -501,7 +555,48 @@ export const runButtonStates = (input: ButtonInput): RunButtons => {
   else if (desktops.every((service) => service.hasPort && isActive(service.state))) desktop = disabled("桌面版已在執行中");
   else desktop = enabled;
 
-  return { all, web, desktop };
+  let hotReload: RunButtonState;
+  if (flutter.length === 0) hotReload = disabled("沒有 Flutter run 服務");
+  else if (!input.iterm) hotReload = disabled("找不到 iTerm2");
+  else if (activeFlutter.length === 0) hotReload = disabled("Flutter 尚未啟動");
+  else hotReload = enabled;
+
+  const hotRestart = hotReload;
+
+  return { all, restart, stop, web, desktop, hotReload, hotRestart };
+};
+
+export const runServiceButtonStates = (
+  service: Pick<RunServiceView, "role" | "state" | "hotReloadable"> & { hasPort: boolean; hasSession: boolean },
+  iterm: boolean
+): RunServiceButtons => {
+  const active = isActive(service.state) || service.hasSession;
+
+  let start: RunButtonState;
+  if (!iterm) start = disabled("找不到 iTerm2");
+  else if (active && service.hasPort) start = disabled("已在執行中");
+  else if (active && !service.hasPort) start = disabled("已送出啟動");
+  else start = enabled;
+
+  let restart: RunButtonState;
+  if (!iterm) restart = disabled("找不到 iTerm2");
+  else if (!active) restart = disabled("尚未啟動");
+  else restart = enabled;
+
+  const stop = service.hasPort && isActive(service.state) ? enabled : disabled("尚未啟動");
+
+  let web: RunButtonState;
+  if (service.role !== "frontend") web = disabled("不是網頁前端");
+  else if (service.state !== "running") web = disabled("前端尚未啟動");
+  else web = enabled;
+
+  let hotReload: RunButtonState;
+  if (!service.hotReloadable) hotReload = disabled("不是 Flutter run 服務");
+  else if (!iterm) hotReload = disabled("找不到 iTerm2");
+  else if (!active) hotReload = disabled("Flutter 尚未啟動");
+  else hotReload = enabled;
+
+  return { start, restart, stop, web, hotReload, hotRestart: hotReload };
 };
 
 // ---------------------------------------------------------------------------

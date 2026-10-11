@@ -6,7 +6,7 @@
 
 ## 開發環境
 
-- macOS（App 目前僅支援 macOS，CI 也在 `macos-latest` 上跑）
+- macOS 或 Linux（CI 目前在 `macos-latest` 上跑）
 - Node 24
 - pnpm 9（版本由 `package.json` 的 `packageManager` 欄位指定）
 

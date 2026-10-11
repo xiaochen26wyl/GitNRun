@@ -8,6 +8,21 @@ const PRELOAD_PATH = join(__dirname, "../preload/index.js");
 /** 渲染程序崩潰時自動重新載入；一分鐘內崩潰超過三次就停手並告訴使用者。 */
 const reloadGuard = createCrashGuard({ maxRestarts: 3, windowMs: 60_000, now: Date.now, ...inMemoryRestartLog() });
 
+const logRendererDiagnostics = (window: BrowserWindow): void => {
+  window.webContents.on("preload-error", (_event, preloadPath, error) => {
+    console.error("[renderer:preload-error]", preloadPath, error);
+  });
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (isMainFrame) {
+      console.error("[renderer:did-fail-load]", errorCode, errorDescription, validatedUrl);
+    }
+  });
+  window.webContents.on("console-message", (details) => {
+    if (details.level !== "warning" && details.level !== "error") return;
+    console.error(`[renderer:${details.level}]`, details.message, details.sourceId ? `${details.sourceId}:${details.lineNumber}` : "");
+  });
+};
+
 export const createMainWindow = (): BrowserWindow => {
   const window = new BrowserWindow({
     width: 1100,
@@ -15,9 +30,11 @@ export const createMainWindow = (): BrowserWindow => {
     minWidth: 820,
     minHeight: 520,
     show: false,
-    title: "GitNRun",
+    title: "devRun",
     webPreferences: buildSecureWebPreferences(PRELOAD_PATH)
   });
+
+  logRendererDiagnostics(window);
 
   window.once("ready-to-show", () => window.show());
 
@@ -28,7 +45,7 @@ export const createMainWindow = (): BrowserWindow => {
     if (reloadGuard.allowRestart()) {
       window.reload();
     } else {
-      dialog.showErrorBox("畫面一直當掉", "GitNRun 的畫面在短時間內當掉了好幾次，已停止自動重新載入。監視仍在背景執行，請關閉視窗後從托盤圖示重新開啟。");
+      dialog.showErrorBox("畫面一直當掉", "devRun 的畫面在短時間內當掉了好幾次，已停止自動重新載入。請從 Dock 重新開啟視窗。");
     }
   });
 

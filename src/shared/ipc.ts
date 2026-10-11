@@ -2,7 +2,9 @@ import type { AiResult, AiSettings, AiUsage, ConflictReport, OutgoingPreview } f
 import type { AppSettings, AppSettingsPatch, BackupFileInfo, RestoreSummary } from "@shared/app-settings";
 import type { BranchRuleFormInput, BranchRuleView } from "@shared/branch-template";
 import type { CommandOutputEvent } from "@shared/command-output";
+import type { DocumentShortcut, DocumentShortcutInput } from "@shared/documents";
 import type { EventPage, EventQuery, PushEvent } from "@shared/events";
+import type { GitLiteOverview } from "@shared/git-lite";
 import type { LogPage, LogQuery } from "@shared/logs";
 import type { MonitorChange, MonitorStatus } from "@shared/monitor";
 import type { Project, ProjectInput } from "@shared/projects";
@@ -66,6 +68,11 @@ export const IPC = {
   runRemoveFolder: "run:remove-folder",
   runSetAccount: "run:set-account",
   runCopyPasscode: "run:copy-passcode",
+  documentsList: "documents:list",
+  documentsSave: "documents:save",
+  documentsRemove: "documents:remove",
+  documentsOpen: "documents:open",
+  gitLiteOverview: "git-lite:overview",
   aiSettingsGet: "ai:settings:get",
   aiSettingsSave: "ai:settings:save",
   aiUsage: "ai:usage",
@@ -176,7 +183,7 @@ export interface GitNRunApi {
   getTerminalAvailability(): Promise<TerminalAvailability>;
   /** 專案啟動頁：所有專案、各服務的狀態與按鈕是否可按（狀態以 TCP 探測得出）。 */
   getRunOverview(): Promise<RunOverview>;
-  /** 渲染層只傳專案識別與動作名稱；指令、路徑、網址都由主程序決定。 */
+  /** 渲染層只傳專案識別、受限動作與服務名稱；指令、路徑、網址都由主程序決定。 */
   runProjectAction(targetId: string, action: RunAction): Promise<RunActionResult>;
   addRunFolder(folder: string): Promise<void>;
   removeRunFolder(targetId: string): Promise<void>;
@@ -184,6 +191,11 @@ export interface GitNRunApi {
   setRunAccount(targetId: string, account: string): Promise<void>;
   /** 由主程序把 dev 通關密碼放進剪貼簿（60 秒後自動清除），渲染層拿不到明文。 */
   copyRunPasscode(targetId: string): Promise<void>;
+  listDocumentShortcuts(): Promise<DocumentShortcut[]>;
+  saveDocumentShortcut(input: DocumentShortcutInput): Promise<DocumentShortcut>;
+  removeDocumentShortcut(id: number): Promise<void>;
+  openDocumentShortcut(id: number): Promise<void>;
+  getGitLiteOverview(): Promise<GitLiteOverview>;
   /** 拖曳進視窗的檔案／資料夾的本機路徑（Electron 不再提供 File.path，要透過 preload 取得）。 */
   pathForFile(file: DroppedFile): string;
 

@@ -1,9 +1,10 @@
 import { EVENT_QUERY_MAX_LIMIT, type EventQuery } from "@shared/events";
+import { validateDocumentShortcutInput, type DocumentShortcutInput } from "@shared/documents";
 import type { LauncherSettingsPatch } from "@shared/ipc";
 import { IPC, type IpcChannel } from "@shared/ipc";
 import { LOG_CATEGORIES, LOG_LEVELS, LOG_QUERY_MAX_LIMIT, type LogQuery } from "@shared/logs";
 import { validateProjectInput, type NormalizedProjectInput } from "@shared/projects";
-import { RUN_ACTIONS, isRunTargetId, normalizeRunAccount, type RunAction } from "@shared/run";
+import { RUN_PROJECT_ACTIONS, RUN_SERVICE_ACTIONS, isRunServiceName, isRunTargetId, normalizeRunAccount, type RunAction } from "@shared/run";
 import { MAX_SECRET_LENGTH, isMaskedPlaceholder, isSecretName } from "@shared/secrets";
 import type { StartWorkInput } from "@shared/start-work";
 
@@ -207,6 +208,12 @@ export const asIdArgs = (args: readonly unknown[]): [number] | null => {
   return id === null ? null : [id];
 };
 
+/** 文件捷徑 id：手動保存的為正數，自動發現的專案 README 為負數；0 不是有效 id。 */
+export const asDocumentOpenArgs = (args: readonly unknown[]): [number] | null => {
+  const id = args.length === 1 ? asSafeInteger(args[0], -MAX_ID, MAX_ID) : null;
+  return id === null || id === 0 ? null : [id];
+};
+
 export const asBooleanArgs = (args: readonly unknown[]): [boolean] | null =>
   args.length === 1 && typeof args[0] === "boolean" ? [args[0]] : null;
 
@@ -320,8 +327,21 @@ export const asRunActionArgs = (args: readonly unknown[]): [string, RunAction] |
   if (args.length !== 2 || !isRunTargetId(args[0])) {
     return null;
   }
-  const action = asEnum(args[1], RUN_ACTIONS);
-  return action === null ? null : [args[0], action];
+  const raw = args[1];
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  if (raw.scope === "project") {
+    if (!hasOnlyKeys(raw, ["scope", "action"])) return null;
+    const action = asEnum(raw.action, RUN_PROJECT_ACTIONS);
+    return action === null ? null : [args[0], { scope: "project", action }];
+  }
+  if (raw.scope === "service") {
+    if (!hasOnlyKeys(raw, ["scope", "service", "action"]) || !isRunServiceName(raw.service)) return null;
+    const action = asEnum(raw.action, RUN_SERVICE_ACTIONS);
+    return action === null ? null : [args[0], { scope: "service", service: raw.service, action }];
+  }
+  return null;
 };
 
 export const asRunTargetIdArgs = (args: readonly unknown[]): [string] | null =>
@@ -334,6 +354,14 @@ export const asRunAccountArgs = (args: readonly unknown[]): [string, string] | n
   }
   const account = normalizeRunAccount(args[1]);
   return account === null ? null : [args[0], account];
+};
+
+export const asDocumentShortcutArgs = (args: readonly unknown[]): [DocumentShortcutInput] | null => {
+  if (args.length !== 1 || !isPlainObject(args[0])) {
+    return null;
+  }
+  const result = validateDocumentShortcutInput(args[0]);
+  return result.ok ? [result.value] : null;
 };
 
 export const asLauncherSettingsPatch = (raw: unknown): LauncherSettingsPatch | null => {

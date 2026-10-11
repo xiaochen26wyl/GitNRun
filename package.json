@@ -1,9 +1,13 @@
 {
-  "name": "gitnrun",
-  "productName": "GitNRun",
+  "name": "devrun",
+  "productName": "devRun",
   "version": "0.1.0",
-  "description": "Local-only GitHub push monitor with a rules engine, AI commit helper and one-click terminal launcher.",
+  "description": "Local dev launcher for starting and restarting frontend/backend services.",
   "license": "Apache-2.0",
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "homepage": "https://github.com/xiaochen26wyl/GitNRun#readme",
   "repository": {
     "type": "git",
@@ -24,7 +28,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "check:boundary": "tsx scripts/check-boundary.ts",
     "smoke:build": "node scripts/smoke-build.mjs",
-    "dist:mac": "pnpm build && electron-builder --mac dmg --x64 --arm64 --publish never"
+    "dist:mac": "pnpm build && electron-builder --mac dmg --x64 --arm64 --publish never",
+    "dist:linux": "pnpm build && electron-builder --linux AppImage deb --x64 --publish never"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
@@ -41,8 +46,8 @@
     "vite": "^6.4.4"
   },
   "build": {
-    "appId": "com.gitnrun.app",
-    "productName": "GitNRun",
+    "appId": "com.devrun.app",
+    "productName": "devRun",
     "asar": true,
     "npmRebuild": false,
     "directories": {
@@ -79,7 +84,7 @@
     },
     "protocols": [
       {
-        "name": "GitNRun",
+        "name": "devRun",
         "schemes": [
           "gitnrun"
         ]

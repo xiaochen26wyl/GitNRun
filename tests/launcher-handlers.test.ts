@@ -113,11 +113,13 @@ describe("launcher settings", () => {
   it("defaults, and recovers from corrupt stored values", () => {
     const db = createTestDb();
     assert.deepEqual(readLauncherSettings(db), { shortcut: DEFAULT_SHORTCUT, defaultTerminal: "terminal", selectedProjectId: null });
+    assert.deepEqual(readLauncherSettings(db, "iterm"), { shortcut: DEFAULT_SHORTCUT, defaultTerminal: "iterm", selectedProjectId: null });
 
     setSetting(db, LAUNCHER_KEYS.shortcut, "not a shortcut");
     setSetting(db, LAUNCHER_KEYS.defaultTerminal, "../../x");
     setSetting(db, LAUNCHER_KEYS.selectedProjectId, "7");
     assert.deepEqual(readLauncherSettings(db), { shortcut: DEFAULT_SHORTCUT, defaultTerminal: "terminal", selectedProjectId: null });
+    assert.deepEqual(readLauncherSettings(db, "iterm"), { shortcut: DEFAULT_SHORTCUT, defaultTerminal: "iterm", selectedProjectId: null });
 
     setSetting(db, LAUNCHER_KEYS.shortcut, null);
     assert.equal(readLauncherSettings(db).shortcut, null, "null means 'no shortcut' and is kept");
@@ -215,6 +217,24 @@ describe("launcher handlers", () => {
     assert.equal(t.handlers.saveSettings({ selectedProjectId: project.id }).selectedProjectId, project.id);
     assert.throws(() => t.handlers.saveSettings({ selectedProjectId: 999 }), UserFacingError);
     assert.equal(t.handlers.saveSettings({ selectedProjectId: null }).selectedProjectId, null);
+  });
+
+  it("prefers iTerm2 when it is installed and no default terminal has been saved", () => {
+    const t = setup();
+    assert.equal(t.handlers.getSettings().defaultTerminal, "terminal");
+
+    const db = createTestDb();
+    const fake = fakeShortcutApi();
+    const shortcuts = createShortcutManager(fake.api, () => undefined);
+    shortcuts.apply(DEFAULT_SHORTCUT);
+    const handlers = createLauncherHandlers({
+      db,
+      shortcuts,
+      launch: async (folder): Promise<LaunchResult> => ({ ok: true, folder, app: "iTerm2", command: null, mappingId: null }),
+      availability: () => ({ terminal: true, iterm: true }),
+      onConfigChanged: () => undefined
+    });
+    assert.equal(handlers.getSettings().defaultTerminal, "iterm");
   });
 
   it("a rejected change does not partially apply", () => {

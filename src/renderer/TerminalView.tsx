@@ -76,10 +76,10 @@ const SettingsBlock = ({ projects, availability }: { projects: Project[]; availa
               if (event.target.value !== "custom") void save({ defaultTerminal: event.target.value }, "已儲存");
             }}
           >
-            <option value={TERMINAL_APP_TERMINAL}>Terminal（內建）</option>
             <option value={TERMINAL_APP_ITERM} disabled={availability?.iterm === false}>
-              iTerm2{availability?.iterm === false ? "（未安裝）" : ""}
+              iTerm2（建議）{availability?.iterm === false ? "（未安裝）" : ""}
             </option>
+            <option value={TERMINAL_APP_TERMINAL}>Terminal（內建）</option>
             <option value="custom">其他終端機…</option>
           </select>
         </label>

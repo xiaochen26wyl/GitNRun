@@ -24,9 +24,14 @@ export const handleIpc = <A extends unknown[], R>(
   handler: (...args: A) => R | Promise<R>
 ): void => {
   ipcMain.handle(channel, async (event, ...rawArgs: unknown[]) => {
-    if (!isTrustedSender(event)) {
-      throw new Error("ipc: untrusted sender");
+    try {
+      if (!isTrustedSender(event)) {
+        throw new Error("ipc: untrusted sender");
+      }
+      return await runValidated(validate, rawArgs, handler);
+    } catch (error) {
+      console.error(`[ipc:${channel}]`, error);
+      throw error;
     }
-    return runValidated(validate, rawArgs, handler);
   });
 };

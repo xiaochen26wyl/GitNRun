@@ -16,7 +16,7 @@ import type { Vault } from "@main/vault/vault";
 
 const changeListeners = new Set<(change: MonitorChange) => void>();
 
-/** 主程序內部的訂閱（例如托盤選單跟著監視狀態更新）；回傳取消訂閱的函式。 */
+/** 主程序內部的訂閱（例如畫面跟著監視狀態更新）；回傳取消訂閱的函式。 */
 export const onMonitorChange = (listener: (change: MonitorChange) => void): (() => void) => {
   changeListeners.add(listener);
   return () => changeListeners.delete(listener);

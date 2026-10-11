@@ -22,7 +22,7 @@ export interface LauncherHandlerDeps {
   launch: (folder: string) => Promise<LaunchResult>;
   shortcuts: Pick<ShortcutManager, "apply" | "current">;
   availability: () => TerminalAvailability;
-  /** 映射、設定變動後呼叫（觸發備份、重建托盤選單）。 */
+  /** 映射、設定變動後呼叫（觸發備份）。 */
   onConfigChanged: () => void;
 }
 
@@ -45,9 +45,10 @@ export interface LauncherHandlers {
 
 export const createLauncherHandlers = (deps: LauncherHandlerDeps): LauncherHandlers => {
   const { db } = deps;
+  const preferredDefaultTerminal = (): string => (deps.availability().iterm ? "iterm" : "terminal");
 
   const currentSettings = (): LauncherSettings => {
-    const stored = readLauncherSettings(db);
+    const stored = readLauncherSettings(db, preferredDefaultTerminal());
     return {
       shortcut: stored.shortcut,
       shortcutRegistered: stored.shortcut !== null && deps.shortcuts.current() === stored.shortcut,

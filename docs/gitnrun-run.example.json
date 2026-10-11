@@ -1,0 +1,44 @@
+{
+  "_note": "這是給 AI 或人工填寫用的範例，不能直接當成 .gitnrun/run.json 使用；正式 JSON 只能保留 version 與 services，請刪除 _note 與每個 _comment 欄位。",
+  "version": 1,
+  "services": [
+    {
+      "_comment": "backend：本機 API 服務。port=true 時 GitNRun 會配置 {port}，並可讓其他服務用 {api.url} 引用。",
+      "name": "api",
+      "role": "backend",
+      "cwd": "apps/api",
+      "command": ["pnpm", "dev"],
+      "port": true,
+      "env": {
+        "PORT": "{port}",
+        "FRONTEND_URL": "{web.url}"
+      }
+    },
+    {
+      "_comment": "frontend：本機網站。needs 代表啟動 web 前也要啟動 api。",
+      "name": "web",
+      "role": "frontend",
+      "cwd": "apps/web",
+      "command": ["pnpm", "dev"],
+      "port": true,
+      "needs": ["api"],
+      "env": {
+        "PORT": "{port}",
+        "API_BASE": "{api.url}"
+      }
+    },
+    {
+      "_comment": "desktop：Electron、Unity Hub 或其他桌面工具。若不需要監聽 port，可設 port=false。",
+      "name": "desktop",
+      "role": "desktop",
+      "cwd": ".",
+      "command": ["pnpm", "dev:desktop"],
+      "port": true,
+      "needs": ["api"],
+      "env": {
+        "PORT": "{port}",
+        "API_BASE": "{api.url}"
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { normalizeFolderPath } from "@shared/launcher";
 import {
@@ -5,11 +6,13 @@ import {
   RUN_MANIFEST_FILE,
   countFreshPorts,
   describeCommand,
+  isFlutterRunCommand,
   normalizeRunAccount,
   parseRunTargetId,
   passcodeSecretName,
   planStart,
   runButtonStates,
+  runServiceButtonStates,
   selectServices,
   urlForPort,
   type RunAction,
@@ -19,13 +22,14 @@ import {
   type RunOverview,
   type RunServiceState,
   type RunServiceView,
+  type RunStartSelection,
   type RunTargetView
 } from "@shared/run";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { Logger } from "@main/logger";
-import { AUTOMATION_DENIED, type ItermTab } from "@main/launcher/osascript";
+import { AUTOMATION_DENIED, runSessionName, type ItermTab } from "@main/launcher/osascript";
 import { serviceDirectory, type LoadedManifest } from "@main/run/manifest";
 import type { PortsFileService } from "@main/run/ports";
 import { addRunFolder, getRunAccount, hasTrustedBefore, isRunTrusted, listRunFolders, removeRunFolder, setRunAccount, trustRunManifest } from "@main/run/store";
@@ -43,9 +47,12 @@ export interface RunHandlerDeps {
   probe: (port: number) => Promise<boolean>;
   allocatePorts: (count: number) => Promise<number[]>;
   writePortsFile: (folder: string, services: Record<string, PortsFileService>, now: number) => Promise<boolean>;
+  discoverFolders?: () => Array<{ label: string; folder: string }>;
   itermAvailable: () => boolean;
   inspect: (path: string) => Promise<"dir" | "file" | "missing">;
   launchTabs: (tabs: ItermTab[]) => Promise<{ code: number; stderr: string }>;
+  sendTextToTabs: (text: "r" | "R", sessionNames: string[]) => Promise<{ code: number; stderr: string }>;
+  stopPorts: (ports: number[]) => Promise<{ code: number; stderr: string }>;
   /** 原生確認對話框；使用者按「允許」才回傳 true。 */
   confirmCommands: (request: ConfirmCommandsRequest) => Promise<boolean>;
   openUrl: (url: string) => Promise<void>;
@@ -80,7 +87,7 @@ interface Target {
   id: string;
   label: string;
   folder: string;
-  source: "project" | "folder";
+  source: "project" | "folder" | "discovered";
 }
 
 interface Session {
@@ -93,6 +100,17 @@ const ERROR_TEXT_MAX = 300;
 
 const fail = (reason: RunFailureReason, message: string): RunActionResult => ({ ok: false, reason, message });
 
+const discoveredId = (folder: string, used: Set<string>): string => {
+  const hash = createHash("sha256").update(folder).digest("hex");
+  let value = 100_000_000 + (Number.parseInt(hash.slice(0, 8), 16) % 900_000_000);
+  let id = `f:${value}`;
+  while (used.has(id)) {
+    value = value === 999_999_999 ? 100_000_000 : value + 1;
+    id = `f:${value}`;
+  }
+  return id;
+};
+
 export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   const { db } = deps;
   const grace = deps.startingGraceMs ?? DEFAULT_STARTING_GRACE_MS;
@@ -100,18 +118,31 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
 
   const targets = (): Target[] => {
     const seen = new Set<string>();
+    const usedIds = new Set<string>();
     const result: Target[] = [];
     for (const project of listProjects(db)) {
       if (!project.localPath) continue;
       const folder = normalizeFolderPath(project.localPath);
       if (seen.has(folder)) continue;
       seen.add(folder);
-      result.push({ id: `p:${project.id}`, label: project.name, folder, source: "project" });
+      const id = `p:${project.id}`;
+      usedIds.add(id);
+      result.push({ id, label: project.name, folder, source: "project" });
     }
     for (const entry of listRunFolders(db)) {
       if (seen.has(entry.path)) continue;
       seen.add(entry.path);
-      result.push({ id: `f:${entry.id}`, label: basename(entry.path) || entry.path, folder: entry.path, source: "folder" });
+      const id = `f:${entry.id}`;
+      usedIds.add(id);
+      result.push({ id, label: basename(entry.path) || entry.path, folder: entry.path, source: "folder" });
+    }
+    for (const entry of deps.discoverFolders?.() ?? []) {
+      const folder = normalizeFolderPath(entry.folder);
+      if (!folder.startsWith("/") || seen.has(folder)) continue;
+      seen.add(folder);
+      const id = discoveredId(folder, usedIds);
+      usedIds.add(id);
+      result.push({ id, label: entry.label || basename(folder) || folder, folder, source: "discovered" });
     }
     return result;
   };
@@ -158,13 +189,22 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     const services: RunServiceView[] = await Promise.all(
       loaded.manifest.services.map(async (spec) => {
         const { state, port } = await serviceState(session, spec.name);
+        const serviceForButtons = {
+          role: spec.role,
+          state,
+          hotReloadable: isFlutterRunCommand(spec.command),
+          hasPort: spec.port,
+          hasSession: !spec.port && session?.startedAt[spec.name] !== undefined
+        };
         return {
           name: spec.name,
           role: spec.role,
           port,
           url: port === null ? null : urlForPort(port),
           state,
-          command: describeCommand(spec)
+          hotReloadable: serviceForButtons.hotReloadable,
+          command: describeCommand(spec),
+          buttons: runServiceButtonStates(serviceForButtons, itermAvailable)
         };
       })
     );
@@ -176,7 +216,13 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       services,
       buttons: runButtonStates({
         manifest: "ok",
-        services: services.map((service, index) => ({ role: service.role, state: service.state, hasPort: loaded.manifest.services[index]?.port === true })),
+        services: services.map((service, index) => ({
+          role: service.role,
+          state: service.state,
+          hotReloadable: service.hotReloadable,
+          hasPort: loaded.manifest.services[index]?.port === true,
+          hasSession: loaded.manifest.services[index]?.port !== true && session?.startedAt[service.name] !== undefined
+        })),
         iterm: itermAvailable
       })
     };
@@ -185,16 +231,20 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   const log = (level: "info" | "warn", message: string, detail?: unknown): void =>
     deps.logger.log({ category: "command", level, message, ...(detail === undefined ? {} : { detail }) });
 
-  const openWeb = async (target: Target, manifest: RunManifest): Promise<RunActionResult> => {
+  const openWeb = async (target: Target, manifest: RunManifest, serviceName?: string): Promise<RunActionResult> => {
     const session = sessions.get(target.id);
     const urls: string[] = [];
     for (const spec of manifest.services) {
+      if (serviceName !== undefined && spec.name !== serviceName) continue;
       if (spec.role !== "frontend") continue;
       const { state, port } = await serviceState(session, spec.name);
       if (state === "running" && port !== null) urls.push(urlForPort(port));
     }
+    if (serviceName !== undefined && !manifest.services.some((spec) => spec.name === serviceName && spec.role === "frontend")) {
+      return fail("unknown-service", "找不到這個網頁服務");
+    }
     if (urls.length === 0) {
-      return fail("not-running", "前端尚未啟動，請先按「一鍵前後端」");
+      return fail("not-running", "前端尚未啟動");
     }
     for (const url of urls) {
       await deps.openUrl(url);
@@ -203,14 +253,123 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { ok: true, message: `已開啟 ${urls.join("、")}` };
   };
 
-  const start = async (target: Target, loaded: Extract<LoadedManifest, { status: "ok" }>, action: "all" | "desktop"): Promise<RunActionResult> => {
+  const stopListeningCommand = (port: number): string =>
+    `kill -TERM $(lsof -ti tcp:${port}) 2>/dev/null || true; sleep 0.5;`;
+
+  const sendFlutterHotkey = async (target: Target, manifest: RunManifest, text: "r" | "R", serviceName?: string): Promise<RunActionResult> => {
+    const session = sessions.get(target.id);
+    if (!session) {
+      return fail("not-running", "Flutter 尚未啟動");
+    }
+    if (!deps.itermAvailable()) {
+      return fail("iterm-missing", "找不到 iTerm2，請先安裝");
+    }
+
+    const names: string[] = [];
+    for (const spec of manifest.services) {
+      if (serviceName !== undefined && spec.name !== serviceName) continue;
+      if (!isFlutterRunCommand(spec.command) || session.startedAt[spec.name] === undefined) {
+        continue;
+      }
+      if (spec.port) {
+        const { state } = await serviceState(session, spec.name);
+        if (state === "stopped") {
+          continue;
+        }
+      }
+      names.push(runSessionName(target.id, spec.name));
+    }
+    if (serviceName !== undefined && !manifest.services.some((spec) => spec.name === serviceName && isFlutterRunCommand(spec.command))) {
+      return fail("unknown-service", "找不到這個 Flutter run 服務");
+    }
+    if (names.length === 0) {
+      return fail("not-running", "Flutter 尚未啟動");
+    }
+
+    const result = await deps.sendTextToTabs(text, names);
+    if (result.code !== 0) {
+      if (AUTOMATION_DENIED.test(result.stderr)) {
+        return fail("permission-denied", "macOS 沒有允許 devRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+      }
+      const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+      log("warn", `無法送出 Flutter ${text === "r" ? "hot reload" : "hot restart"}：${detail}`);
+      return fail("failed", `無法送出熱更新快捷鍵：${detail}`);
+    }
+
+    const label = text === "r" ? "熱更新" : "熱啟動";
+    log("info", `已對 ${target.label} 送出 Flutter ${label}（${text}）`);
+    return { ok: true, message: `已送出 Flutter ${label}（${text}）` };
+  };
+
+  const stop = async (target: Target, manifest: RunManifest, serviceName?: string): Promise<RunActionResult> => {
+    const session = sessions.get(target.id);
+    if (!session) {
+      return fail("nothing-to-do", "尚未啟動");
+    }
+    if (serviceName !== undefined && !manifest.services.some((spec) => spec.name === serviceName)) {
+      return fail("unknown-service", "找不到這個服務");
+    }
+
+    const active: Array<{ name: string; port: number }> = [];
+    for (const spec of manifest.services) {
+      if (serviceName !== undefined && spec.name !== serviceName) continue;
+      const { state, port } = await serviceState(session, spec.name);
+      if (state !== "stopped" && port !== null) {
+        active.push({ name: spec.name, port });
+      }
+    }
+    if (active.length === 0) {
+      if (serviceName === undefined) {
+        sessions.delete(target.id);
+        await deps.writePortsFile(target.folder, {}, deps.now());
+      }
+      return fail("nothing-to-do", "尚未啟動");
+    }
+
+    const result = await deps.stopPorts(active.map((item) => item.port));
+    if (result.code !== 0) {
+      const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+      log("warn", `無法停止 ${target.label}：${detail}`);
+      return fail("failed", `無法停止：${detail}`);
+    }
+
+    for (const item of active) {
+      delete session.ports[item.name];
+      delete session.startedAt[item.name];
+    }
+    if (Object.keys(session.ports).length === 0) {
+      sessions.delete(target.id);
+    } else {
+      sessions.set(target.id, session);
+    }
+
+    const known: Record<string, PortsFileService> = {};
+    for (const spec of manifest.services) {
+      const port = session.ports[spec.name];
+      if (spec.port && port !== undefined) {
+        known[spec.name] = { role: spec.role, port };
+      }
+    }
+    await deps.writePortsFile(target.folder, known, deps.now());
+
+    const names = active.map((item) => item.name);
+    log("info", `已停止 ${target.label}：${names.join("、")}`);
+    return { ok: true, message: `已停止 ${names.length} 個服務：${names.join("、")}` };
+  };
+
+  const start = async (
+    target: Target,
+    loaded: Extract<LoadedManifest, { status: "ok" }>,
+    selection: RunStartSelection,
+    restart = false
+  ): Promise<RunActionResult> => {
     if (!deps.itermAvailable()) {
       return fail("iterm-missing", "找不到 iTerm2，請先安裝");
     }
     const { manifest } = loaded;
-    const selected = selectServices(manifest, action);
+    const selected = selectServices(manifest, selection);
     if (selected.length === 0) {
-      return fail("nothing-to-do", action === "all" ? "這個專案沒有後端或前端服務" : "這個專案沒有桌面版");
+      return typeof selection === "object" ? fail("unknown-service", "找不到這個服務") : fail("nothing-to-do", "這個專案沒有可啟動服務");
     }
 
     // 已在執行或正在啟動的服務：沿用它的 port，不再啟動。
@@ -226,7 +385,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
     }
 
-    if (selected.every((item) => skip.has(item.name))) {
+    if (!restart && selected.every((item) => skip.has(item.name))) {
       const urls = selected.map((item) => reuse[item.name]).filter((port): port is number => port !== undefined).map(urlForPort);
       return { ok: true, message: `已經在執行中：${urls.join("、")}` };
     }
@@ -246,13 +405,17 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     const fresh = await deps.allocatePorts(countFreshPorts(manifest, reuse));
-    const plan = planStart(manifest, action, reuse, skip, fresh);
-    const tabs: ItermTab[] = plan.starts.map((item) => ({ dir: serviceDirectory(target.folder, item.cwd), name: item.name, command: item.commandLine }));
+    const plan = planStart(manifest, selection, reuse, restart ? new Set<string>() : skip, fresh);
+    const tabs: ItermTab[] = plan.starts.map((item) => ({
+      dir: serviceDirectory(target.folder, item.cwd),
+      name: runSessionName(target.id, item.name),
+      command: restart && item.port !== null && reuse[item.name] !== undefined ? `${stopListeningCommand(item.port)} ${item.commandLine}` : item.commandLine
+    }));
 
     const result = await deps.launchTabs(tabs);
     if (result.code !== 0) {
       if (AUTOMATION_DENIED.test(result.stderr)) {
-        return fail("permission-denied", "macOS 沒有允許 GitNRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+        return fail("permission-denied", "macOS 沒有允許 devRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
       }
       const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
       log("warn", `無法在 iTerm2 啟動 ${target.label}：${detail}`);
@@ -263,9 +426,9 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     const now = deps.now();
     const next: Session = { ports: { ...session.ports }, startedAt: { ...session.startedAt } };
     for (const item of plan.starts) {
+      next.startedAt[item.name] = now;
       if (item.port !== null) {
         next.ports[item.name] = item.port;
-        next.startedAt[item.name] = now;
       }
     }
     for (const [name, port] of Object.entries(reuse)) {
@@ -283,8 +446,10 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     await deps.writePortsFile(target.folder, known, now);
 
     const names = plan.starts.map((item) => item.name);
-    log("info", `已在 iTerm2 啟動 ${target.label}：${names.join("、")}`, { commands: plan.starts.map((item) => ({ service: item.name, commandLine: item.commandLine })) });
-    return { ok: true, message: `已在 iTerm2 開啟 ${names.length} 個分頁：${names.join("、")}` };
+    log("info", `${restart ? "已在 iTerm2 重新啟動" : "已在 iTerm2 啟動"} ${target.label}：${names.join("、")}`, {
+      commands: tabs.map((item) => ({ service: item.name, commandLine: item.command }))
+    });
+    return { ok: true, message: `已在 iTerm2 ${restart ? "重新開啟" : "開啟"} ${names.length} 個分頁：${names.join("、")}` };
   };
 
   return {
@@ -304,12 +469,27 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
       const loaded = await deps.loadManifest(target.folder);
       if (loaded.status === "missing") {
-        return fail("no-manifest", `這個專案沒有 ${RUN_MANIFEST_FILE}`);
+        return fail("no-manifest", "找不到可啟動服務");
       }
       if (loaded.status === "invalid") {
         return fail("invalid-manifest", `描述檔有誤：${loaded.errors[0] ?? "未知原因"}`);
       }
-      return action === "web" ? openWeb(target, loaded.manifest) : start(target, loaded, action);
+      if (action.scope === "project") {
+        return stop(target, loaded.manifest);
+      }
+      if (action.action === "web") {
+        return openWeb(target, loaded.manifest, action.service);
+      }
+      if (action.action === "stop") {
+        return stop(target, loaded.manifest, action.service);
+      }
+      if (action.action === "hot-reload") {
+        return sendFlutterHotkey(target, loaded.manifest, "r", action.service);
+      }
+      if (action.action === "hot-restart") {
+        return sendFlutterHotkey(target, loaded.manifest, "R", action.service);
+      }
+      return start(target, loaded, { service: action.service }, action.action === "restart");
     },
 
     async addFolder(path) {
