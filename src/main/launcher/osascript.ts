@@ -68,21 +68,15 @@ export const ITERM_TABS_SCRIPT = [
   "end run"
 ] as const;
 
-/** 對 GitNRun 命名的 iTerm2 session 送出固定文字。argv 第一個是文字，其餘是 session 名稱。 */
-export const ITERM_WRITE_TEXT_SCRIPT = [
+/** 關閉 GitNRun 命名的 iTerm2 session。argv 全是 session 名稱；由後往前走，關掉分頁後索引才不會錯位。 */
+export const ITERM_CLOSE_SCRIPT = [
   "on run argv",
-  "set theText to item 1 of argv",
-  "set wantedNames to {}",
-  "repeat with i from 2 to count of argv",
-  "set end of wantedNames to item i of argv",
-  "end repeat",
   'tell application id "com.googlecode.iterm2"',
-  "activate",
-  "repeat with aWindow in windows",
-  "repeat with aTab in tabs of aWindow",
-  "repeat with aSession in sessions of aTab",
-  "if wantedNames contains (name of aSession as text) then",
-  "tell aSession to write text theText newline false",
+  "repeat with w from (count of windows) to 1 by -1",
+  "repeat with t from (count of tabs of window w) to 1 by -1",
+  "repeat with s from (count of sessions of tab t of window w) to 1 by -1",
+  "if argv contains (name of session s of tab t of window w as text) then",
+  "tell session s of tab t of window w to close",
   "end if",
   "end repeat",
   "end repeat",
@@ -114,11 +108,10 @@ export const buildItermTabsArgs = (tabs: readonly ItermTab[]): string[] => [
   ...tabs.flatMap((tab) => [tab.dir, tab.name, tab.command])
 ];
 
-/** 對既有 iTerm2 session 送出文字；文字與 session 名稱只透過 argv 傳入。 */
-export const buildItermWriteTextArgs = (text: "r" | "R", sessionNames: readonly string[]): string[] => [
-  ...ITERM_WRITE_TEXT_SCRIPT.flatMap((line) => ["-e", line]),
+/** 關閉既有 iTerm2 session；session 名稱只透過 argv 傳入。 */
+export const buildItermCloseArgs = (sessionNames: readonly string[]): string[] => [
+  ...ITERM_CLOSE_SCRIPT.flatMap((line) => ["-e", line]),
   "--",
-  text,
   ...sessionNames
 ];
 

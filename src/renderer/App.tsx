@@ -1,20 +1,29 @@
 import { useEffect, useState } from "react";
 import type { AppInfo } from "@shared/ipc";
-import { DocumentsView } from "./DocumentsView";
-import { GeneralPanel } from "./GeneralPanel";
+import { DEFAULT_RUN_GROUP_ID, RUN_GROUPS, RUN_OTHER_GROUP, runGroupById, type RunGroupId } from "@shared/run-groups";
+import { GeneralPanel, GithubTokenGuide } from "./GeneralPanel";
 import { GitHubView } from "./GitHubView";
 import { RunView } from "./RunView";
+import { SecretsPanel } from "./SecretsPanel";
 import logo from "./assets/logo.png";
 
-type Tab = "run" | "documents" | "github" | "settings";
+type Tab = RunGroupId | "github" | "settings";
 
 export const App = () => {
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [tab, setTab] = useState<Tab>("run");
+  const [tab, setTab] = useState<Tab>(DEFAULT_RUN_GROUP_ID);
+  // 對不到任何分組的專案數；大於 0 才多出「其他」頁籤，避免新專案悄悄消失。
+  const [ungrouped, setUngrouped] = useState(0);
+  const runGroups = ungrouped > 0 ? [...RUN_GROUPS, RUN_OTHER_GROUP] : RUN_GROUPS;
 
   useEffect(() => {
     void window.gitNRun.getAppInfo().then(setInfo);
   }, []);
+
+  // 停在「其他」時最後一個未歸類專案不見了，退回第一個分組，不停在空白頁。
+  useEffect(() => {
+    if (tab === "other" && ungrouped === 0) setTab(DEFAULT_RUN_GROUP_ID);
+  }, [tab, ungrouped]);
 
   return (
     <div className="app">
@@ -25,12 +34,11 @@ export const App = () => {
           {info ? <span className="muted">v{info.version}</span> : null}
         </div>
         <nav className="tabs" aria-label="主頁籤">
-          <button type="button" className={tab === "run" ? "active" : ""} onClick={() => setTab("run")}>
-            專案啟動
-          </button>
-          <button type="button" className={tab === "documents" ? "active" : ""} onClick={() => setTab("documents")}>
-            文件空間
-          </button>
+          {runGroups.map((group) => (
+            <button key={group.id} type="button" className={tab === group.id ? "active" : ""} onClick={() => setTab(group.id)}>
+              {group.label}
+            </button>
+          ))}
           <button type="button" className={tab === "github" ? "active" : ""} onClick={() => setTab("github")}>
             Git / GitHub
           </button>
@@ -41,10 +49,15 @@ export const App = () => {
       </header>
 
       <main className="content">
-        {tab === "run" ? <RunView /> : null}
-        {tab === "documents" ? <DocumentsView /> : null}
+        {tab !== "github" && tab !== "settings" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} /> : null}
         {tab === "github" ? <GitHubView onOpenSettings={() => setTab("settings")} /> : null}
-        {tab === "settings" ? <GeneralPanel /> : null}
+        {tab === "settings" ? (
+          <div className="settings-page">
+            <GeneralPanel />
+            <GithubTokenGuide />
+            <SecretsPanel />
+          </div>
+        ) : null}
       </main>
     </div>
   );

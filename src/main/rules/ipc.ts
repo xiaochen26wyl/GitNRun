@@ -1,5 +1,4 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { BrowserWindow, dialog } from "electron";
 import { IPC } from "@shared/ipc";
 import type { RulesExportResult, RulesImportResult } from "@shared/rule-runs";
 import { UserFacingError } from "@main/errors";
@@ -14,18 +13,15 @@ import {
   asRuleObjectArgs,
   asRuleUpdateArgs
 } from "@main/ipc-validation";
+import { native } from "@main/native/bridge";
 import { MAX_RULES_FILE_BYTES, type RulesHandlers } from "@main/rules/handlers";
 
-const focusedWindow = (): BrowserWindow | undefined => BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-
 const exportRules = async (handlers: RulesHandlers): Promise<RulesExportResult> => {
-  const options = {
+  const result = await native().showSaveDialog({
     title: "匯出規則",
     defaultPath: "gitnrun-rules.json",
     filters: [{ name: "GitNRun 規則", extensions: ["json"] }]
-  };
-  const window = focusedWindow();
-  const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+  });
   if (result.canceled || !result.filePath) {
     return { saved: false };
   }
@@ -35,13 +31,10 @@ const exportRules = async (handlers: RulesHandlers): Promise<RulesExportResult> 
 };
 
 const importRules = async (handlers: RulesHandlers): Promise<RulesImportResult> => {
-  const options = {
+  const result = await native().showOpenFileDialog({
     title: "匯入規則",
-    properties: ["openFile" as const],
     filters: [{ name: "GitNRun 規則", extensions: ["json"] }]
-  };
-  const window = focusedWindow();
-  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+  });
   const [filePath] = result.filePaths;
   if (result.canceled || !filePath) {
     return { cancelled: true };

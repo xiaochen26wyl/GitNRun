@@ -14,7 +14,7 @@ export const FIXED_SECRET_NAMES = [
 export type FixedSecretName = (typeof FIXED_SECRET_NAMES)[number];
 
 export const SECRET_LABELS: Record<FixedSecretName, string> = {
-  "github.pat": "GitHub Token（fine-grained，Contents: Read、Metadata: Read）",
+  "github.pat": "GitHub Token（fine-grained：Issues: Read、Metadata: Read；監視推送另需 Contents: Read）",
   "ai.anthropic": "Anthropic API Key",
   "ai.openai": "OpenAI API Key",
   "notify.slack_webhook": "Slack Incoming Webhook URL",

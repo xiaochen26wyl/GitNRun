@@ -6,7 +6,10 @@ import {
   MAX_IPC_STRING,
   asBoundedString,
   asDocumentOpenArgs,
+  asDocumentRootArgs,
   asEnum,
+  asExternalLinkArgs,
+  asExternalUrl,
   asNoArgs,
   asRunAccountArgs,
   asRunActionArgs,
@@ -113,13 +116,14 @@ describe("run page arguments", () => {
 
   it("accepts only a target id plus a known action object", () => {
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "stop" }]), ["p:3", { scope: "project", action: "stop" }]);
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "readme" }]), ["p:3", { scope: "project", action: "readme" }]);
     assert.deepEqual(asRunActionArgs(["f:12", { scope: "service", service: "web", action: "web" }]), [
       "f:12",
       { scope: "service", service: "web", action: "web" }
     ]);
-    assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "flutter-web", action: "hot-reload" }]), [
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "flutter-web", action: "restart" }]), [
       "p:3",
-      { scope: "service", service: "flutter-web", action: "hot-reload" }
+      { scope: "service", service: "flutter-web", action: "restart" }
     ]);
   });
 
@@ -132,8 +136,12 @@ describe("run page arguments", () => {
       ["p:3", "rm -rf /"],
       ["p:3", { scope: "project", action: "start" }],
       ["p:3", { scope: "project", action: "stop", service: "web" }],
+      ["p:3", { scope: "project", action: "readme", path: "/etc/passwd" }],
+      ["p:3", { scope: "service", service: "web", action: "readme" }],
       ["p:3", { scope: "service", service: "Web", action: "start" }],
       ["p:3", { scope: "service", service: "web", action: "desktop" }],
+      ["p:3", { scope: "service", service: "flutter", action: "hot-reload" }],
+      ["p:3", { scope: "service", service: "flutter", action: "hot-restart" }],
       ["p:3", { scope: "service", service: "web", action: "start", command: "pnpm dev" }],
       ["../../etc", { scope: "service", service: "web", action: "start" }],
       ["p:0", { scope: "service", service: "web", action: "start" }],
@@ -189,6 +197,73 @@ describe("asDocumentOpenArgs", () => {
   it("rejects zero, non-integers, non-numbers and the wrong arity", () => {
     for (const args of [[], [0], [1.5], [-0.5], ["1"], [null], [Number.NaN], [Infinity], [2 ** 31], [-(2 ** 31)], [1, 2]]) {
       assert.equal(asDocumentOpenArgs(args), null, JSON.stringify(args));
+    }
+  });
+});
+
+describe("asDocumentRootArgs", () => {
+  it("accepts a path or an empty string (auto-scan off) and trims whitespace", () => {
+    assert.deepEqual(asDocumentRootArgs(["/Users/me/code"]), ["/Users/me/code"]);
+    assert.deepEqual(asDocumentRootArgs(["  /Users/me/code  "]), ["/Users/me/code"]);
+    assert.deepEqual(asDocumentRootArgs([""]), [""]);
+  });
+
+  it("rejects non-strings, control characters, overlong paths and the wrong arity", () => {
+    for (const args of [[], [null], [1], ["/a\u0000b"], ["x".repeat(MAX_IPC_STRING + 1)], ["/a", "/b"]]) {
+      assert.equal(asDocumentRootArgs(args), null, JSON.stringify(args));
+    }
+  });
+});
+
+describe("asExternalUrl / asExternalLinkArgs", () => {
+  it("accepts https://github.com/settings/ pages and returns the normalized URL", () => {
+    const url = "https://github.com/settings/personal-access-tokens/new";
+    assert.equal(asExternalUrl(url), url);
+    assert.deepEqual(asExternalLinkArgs([url]), [url]);
+    assert.equal(asExternalUrl("https://github.com/settings/tokens?type=beta"), "https://github.com/settings/tokens?type=beta");
+  });
+
+  it("rejects other hosts, schemes, ports, credentials and look-alike hosts", () => {
+    for (const value of [
+      "http://github.com/settings/tokens",
+      "https://evil.com/settings/tokens",
+      "https://github.com.evil.com/settings/tokens",
+      "https://api.github.com/settings/tokens",
+      "https://github.com:8443/settings/tokens",
+      "https://user:pw@github.com/settings/tokens",
+      "https://github.com\\@evil.com/settings/tokens",
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "ftp://github.com/settings/tokens"
+    ]) {
+      assert.equal(asExternalUrl(value), null, value);
+    }
+  });
+
+  it("rejects paths outside /settings/, including traversal out of it", () => {
+    for (const value of [
+      "https://github.com/",
+      "https://github.com/settings",
+      "https://github.com/octocat/repo",
+      "https://github.com/settings/../octocat",
+      "https://github.com/settings/%2e%2e/octocat",
+      "https://github.com/login/oauth/authorize"
+    ]) {
+      assert.equal(asExternalUrl(value), null, value);
+    }
+  });
+
+  it("rejects non-strings, control characters, overlong input and the wrong arity", () => {
+    for (const args of [
+      [],
+      [null],
+      [42],
+      [""],
+      ["https://github.com/settings/tokens\n"],
+      ["https://github.com/settings/" + "a".repeat(300)],
+      ["https://github.com/settings/tokens", "https://github.com/settings/tokens"]
+    ]) {
+      assert.equal(asExternalLinkArgs(args), null, JSON.stringify(args));
     }
   });
 });

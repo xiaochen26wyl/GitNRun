@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { validateManifest, type RunAction, type RunManifest, type RunServiceActionName } from "@shared/run";
+import { validateManifest, type MobilePlatform, type RunAction, type RunManifest, type RunServiceActionName } from "@shared/run";
 import { addProject } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { ItermTab } from "@main/launcher/osascript";
@@ -26,15 +26,6 @@ const manifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const flutterManifestOf = (): RunManifest => {
-  const result = validateManifest({
-    version: 1,
-    services: [{ name: "flutter", role: "frontend", command: ["flutter", "run", "-d", "chrome", "--web-port", "{port}"], port: true }]
-  });
-  assert.ok(result.ok);
-  return result.manifest;
-};
-
 const multiFrontendManifestOf = (): RunManifest => {
   const result = validateManifest({
     version: 1,
@@ -48,15 +39,30 @@ const multiFrontendManifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const harness = (options: { loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }> } = {}) => {
+const mobileManifestOf = (): RunManifest => {
+  const result = validateManifest({
+    version: 1,
+    services: [
+      { name: "web", role: "frontend", command: ["pnpm", "dev"], port: true, env: { PORT: "{port}" } },
+      { name: "mobile-anipurr-ios", role: "desktop", command: ["flutter", "run", "-d", "iPhone"], port: false, env: {} },
+      { name: "mobile-anipurr-android", role: "desktop", command: ["flutter", "run", "-d", "emulator"], port: false, env: {} }
+    ]
+  });
+  assert.ok(result.ok);
+  return result.manifest;
+};
+
+const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string } } = {}) => {
   const db = createTestDb();
   const listening = new Set<number>();
   const launched: ItermTab[][] = [];
-  const sent: Array<{ text: "r" | "R"; sessionNames: string[] }> = [];
   const opened: string[] = [];
+  const documents: string[] = [];
   const confirms: ConfirmCommandsRequest[] = [];
   const written: Array<{ folder: string; services: Record<string, { port: number; role: string }> }> = [];
   const stopped: number[][] = [];
+  const closed: string[][] = [];
+  const simulators: MobilePlatform[] = [];
   const logs: string[] = [];
   const copied: string[] = [];
   const cipher = createFakeCipher();
@@ -64,7 +70,7 @@ const harness = (options: { loaded?: LoadedManifest; iterm?: boolean; allow?: bo
   let next = 41000;
   let time = 1_000_000;
   let loaded: LoadedManifest = options.loaded ?? { status: "ok", manifest: manifestOf(), hash: "a".repeat(64) };
-  const state = { iterm: options.iterm ?? true, allow: options.allow ?? true, launch: options.launch ?? { code: 0, stderr: "" } };
+  const state = { iterm: options.iterm ?? true, allow: options.allow ?? true, launch: options.launch ?? { code: 0, stderr: "" }, close: { code: 0, stderr: "" }, simulator: { code: 0, stderr: "" } };
 
   const handlers = createRunHandlers({
     db,
@@ -83,20 +89,30 @@ const harness = (options: { loaded?: LoadedManifest; iterm?: boolean; allow?: bo
       launched.push(tabs);
       return state.launch;
     },
-    sendTextToTabs: async (text, sessionNames) => {
-      sent.push({ text, sessionNames });
-      return state.launch;
-    },
     stopPorts: async (ports) => {
       stopped.push(ports);
       ports.forEach((port) => listening.delete(port));
       return { code: 0, stderr: "" };
+    },
+    closeTabs: async (sessionNames) => {
+      closed.push(sessionNames);
+      return state.close;
+    },
+    closeSimulator: async (platform) => {
+      simulators.push(platform);
+      return state.simulator;
     },
     confirmCommands: async (request) => {
       confirms.push(request);
       return state.allow;
     },
     openUrl: async (url) => void opened.push(url),
+    ...(options.detectFramework === undefined ? {} : { detectFramework: options.detectFramework }),
+    findReadme: (folder) => options.readmes?.[folder] ?? null,
+    openDocument: async (path) => {
+      documents.push(path);
+      return options.openDocument ?? { ok: true };
+    },
     vault,
     copySecret: (secret) => void copied.push(secret),
     now: () => time,
@@ -121,9 +137,11 @@ const harness = (options: { loaded?: LoadedManifest; iterm?: boolean; allow?: bo
     handlers,
     listening,
     launched,
-    sent,
     stopped,
+    closed,
+    simulators,
     opened,
+    documents,
     confirms,
     written,
     logs,
@@ -173,6 +191,19 @@ describe("run handlers: listing", () => {
     h.setLoaded({ status: "invalid", errors: ["壞了"] });
     const invalid = (await h.handlers.overview()).targets[0];
     assert.deepEqual(invalid?.errors, ["壞了"]);
+  });
+
+  it("reports the detected framework per service, and survives a detection failure", async () => {
+    const h = harness({
+      detectFramework: async (_folder, spec) => {
+        if (spec.name === "api") return "Django";
+        if (spec.name === "web") throw new Error("boom");
+        return null;
+      }
+    });
+    h.project();
+    const [target] = (await h.handlers.overview()).targets;
+    assert.deepEqual(target?.services.map((service) => [service.name, service.framework]), [["api", "Django"], ["web", null], ["panel", null]]);
   });
 
   it("validates folders before adding them", async () => {
@@ -276,6 +307,136 @@ describe("run handlers: one-click start", () => {
     assert.deepEqual(h.written.at(-1)?.services, { api: { role: "backend", port: 41001 } });
   });
 
+  it("closes the iTerm2 tabs of the services it ends, and only those", async () => {
+    const h = harness();
+    const project = h.project();
+    await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+    h.listening.add(41001);
+    h.listening.add(41002);
+
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "stop")));
+    assert.deepEqual(h.closed, [["gitnrun p:1 web"]]);
+
+    ok(await h.handlers.run(`p:${project.id}`, stopProject));
+    assert.deepEqual(h.closed.at(-1), ["gitnrun p:1 api"]);
+  });
+
+  it("closes the tab of a service that already died, even though no port is listening", async () => {
+    const h = harness();
+    const project = h.project();
+    await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+    h.listening.add(41001);
+    h.advance(61_000);
+
+    ok(await h.handlers.run(`p:${project.id}`, stopProject));
+
+    assert.deepEqual(h.stopped, [[41001]]);
+    assert.deepEqual(h.closed, [["gitnrun p:1 api", "gitnrun p:1 web"]]);
+  });
+
+  it("reports a tab-closing failure after the services were already ended", async () => {
+    const h = harness();
+    const project = h.project();
+    await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+    h.listening.add(41001);
+    h.listening.add(41002);
+    h.state.close = { code: 1, stderr: "not authorized to send apple events (-1743)" };
+
+    const result = await h.handlers.run(`p:${project.id}`, stopProject);
+
+    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
+    assert.deepEqual(h.stopped, [[41001, 41002]]);
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["stopped", "stopped", "stopped"]);
+  });
+
+  describe("mobile services", () => {
+    const mobileHarness = (options: Parameters<typeof harness>[0] = {}) =>
+      harness({ loaded: { status: "ok", manifest: mobileManifestOf(), hash: "m".repeat(64) }, ...options });
+
+    it("closes only the iOS simulator when the iOS service is ended", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+
+      ok(result);
+      assert.deepEqual(h.simulators, ["ios"]);
+      assert.match(result.message, /iOS 模擬器/);
+      assert.deepEqual(h.closed.at(-1), ["gitnrun p:1 mobile-anipurr-ios"]);
+    });
+
+    it("closes only the Android emulator when the Android service is ended", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
+
+      ok(await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "stop")));
+
+      assert.deepEqual(h.simulators, ["android"]);
+    });
+
+    it("leaves simulators alone when an ordinary service is ended", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      h.listening.add(41001);
+
+      ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "stop")));
+
+      assert.deepEqual(h.simulators, []);
+    });
+
+    it("closes the simulators of the mobile services that were started when the whole project is ended", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
+
+      ok(await h.handlers.run(`p:${project.id}`, stopProject));
+
+      assert.deepEqual(h.simulators, ["android"]);
+    });
+
+    it("does not touch simulators for a mobile service that was never started", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "stop"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "nothing-to-do"]);
+      assert.deepEqual(h.simulators, []);
+    });
+
+    it("reports a simulator failure after the service was already ended, and still clears its state", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      h.state.simulator = { code: 127, stderr: "找不到 xcrun" };
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+      assert.match(result.message, /服務已結束，但無法關閉 iOS 模擬器：找不到 xcrun/);
+      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["stopped", "stopped", "stopped"]);
+    });
+
+    it("still closes the simulator when the iTerm2 tab could not be closed", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      h.state.close = { code: 1, stderr: "not authorized to send apple events (-1743)" };
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
+      assert.deepEqual(h.simulators, ["ios"]);
+    });
+  });
+
   it("does not clear other running services when a selected stopped service is stopped", async () => {
     const h = harness();
     const project = h.project();
@@ -374,36 +535,6 @@ describe("run handlers: one-click start", () => {
     const none = await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
     assert.deepEqual([none.ok, none.ok ? "" : none.reason], [false, "unknown-service"]);
   });
-
-  it("sends Flutter hot reload and hot restart keys to the started iTerm session", async () => {
-    const h = harness({ loaded: { status: "ok", manifest: flutterManifestOf(), hash: "f".repeat(64) } });
-    const project = h.project();
-    const id = `p:${project.id}`;
-
-    const early = await h.handlers.run(id, serviceAction("flutter", "hot-reload"));
-    assert.deepEqual([early.ok, early.ok ? "" : early.reason], [false, "not-running"]);
-
-    ok(await h.handlers.run(id, serviceAction("flutter", "start")));
-    h.listening.add(41001);
-    ok(await h.handlers.run(id, serviceAction("flutter", "hot-reload")));
-    ok(await h.handlers.run(id, serviceAction("flutter", "hot-restart")));
-
-    assert.deepEqual(h.sent, [
-      { text: "r", sessionNames: ["gitnrun p:1 flutter"] },
-      { text: "R", sessionNames: ["gitnrun p:1 flutter"] }
-    ]);
-  });
-
-  it("does not send Flutter hot keys after a port-backed Flutter service has stopped", async () => {
-    const h = harness({ loaded: { status: "ok", manifest: flutterManifestOf(), hash: "f".repeat(64) } });
-    const project = h.project();
-    await h.handlers.run(`p:${project.id}`, serviceAction("flutter", "start"));
-    h.advance(61_000);
-
-    const result = await h.handlers.run(`p:${project.id}`, serviceAction("flutter", "hot-reload"));
-    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "not-running"]);
-    assert.deepEqual(h.sent, []);
-  });
 });
 
 describe("run handlers: trust confirmation", () => {
@@ -468,6 +599,56 @@ describe("run handlers: open web", () => {
     await h.handlers.run(`p:${project.id}`, serviceAction("web", "web"));
     assert.equal(h.confirms.length, 0);
     assert.equal(h.launched.length, 0);
+  });
+});
+
+describe("run handlers: open README", () => {
+  const readmes = { "/work/app": "/work/app/README.md" };
+
+  it("enables the button only for targets that have a README.md", async () => {
+    const h = harness({ readmes, discovered: [{ label: "bare", folder: "/work/bare" }] });
+    h.project("/work/app");
+    const [withReadme, without] = (await h.handlers.overview()).targets;
+    assert.deepEqual(withReadme?.readme, { enabled: true, reason: null });
+    assert.deepEqual(without?.readme, { enabled: false, reason: "找不到 README.md" });
+  });
+
+  it("opens the README the main process found, never a path from the caller", async () => {
+    const h = harness({ readmes });
+    const project = h.project("/work/app");
+    const result = await h.handlers.run(`p:${project.id}`, { scope: "project", action: "readme" });
+    ok(result);
+    assert.deepEqual(h.documents, ["/work/app/README.md"]);
+    assert.ok(h.logs.some((line) => line.includes("README.md")));
+  });
+
+  it("works without a launch manifest and never touches iTerm2 or asks for confirmation", async () => {
+    const h = harness({ readmes, loaded: { status: "missing" }, iterm: false });
+    const project = h.project("/work/app");
+    ok(await h.handlers.run(`p:${project.id}`, { scope: "project", action: "readme" }));
+    assert.deepEqual(h.documents, ["/work/app/README.md"]);
+    assert.equal(h.launched.length, 0);
+    assert.equal(h.confirms.length, 0);
+  });
+
+  it("reports a missing README and an opener failure without opening anything extra", async () => {
+    const missing = harness();
+    const first = missing.project("/work/app");
+    const none = await missing.handlers.run(`p:${first.id}`, { scope: "project", action: "readme" });
+    assert.deepEqual(none, { ok: false, reason: "no-readme", message: "找不到 README.md" });
+    assert.deepEqual(missing.documents, []);
+
+    const broken = harness({ readmes, openDocument: { ok: false, message: "無法開啟路徑：boom" } });
+    const second = broken.project("/work/app");
+    const failed = await broken.handlers.run(`p:${second.id}`, { scope: "project", action: "readme" });
+    assert.deepEqual(failed, { ok: false, reason: "failed", message: "無法開啟路徑：boom" });
+  });
+
+  it("rejects an unknown target", async () => {
+    const h = harness({ readmes });
+    const result = await h.handlers.run("p:99", { scope: "project", action: "readme" });
+    assert.equal(result.ok, false);
+    assert.deepEqual(h.documents, []);
   });
 });
 

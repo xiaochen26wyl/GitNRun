@@ -1,37 +1,18 @@
-import { lstatSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { basename, join, normalize, relative } from "node:path";
-import type { DocumentOpener, DocumentShortcut } from "@shared/documents";
+import { basename, join, normalize } from "node:path";
+import { DEFAULT_DOCUMENT_OPENER, type DocumentOpener, type DocumentShortcut } from "@shared/documents";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
-import { createDocumentHandlers, type DocumentHandlers } from "@main/documents/handlers";
+import { createDocumentHandlers, readDocumentRoot, type DocumentHandlers } from "@main/documents/handlers";
 import { redactSecrets } from "@main/log-redaction";
 import { listRunFolders } from "@main/run/store";
 
 const OPEN = "/usr/bin/open";
 const ERROR_TEXT_MAX = 300;
-const MAX_READMES_PER_TARGET = 50;
-const MAX_SCAN_DEPTH = 5;
-const MAX_SCAN_ENTRIES = 5_000;
-const README_NAME = /^readme(?:\.[a-z0-9][a-z0-9._-]*)?$/i;
-const SKIPPED_DIRS = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  ".next",
-  ".nuxt",
-  ".turbo",
-  ".vercel",
-  ".yarn",
-  "coverage",
-  "dist",
-  "build",
-  "node_modules",
-  "release",
-  "target",
-  "vendor"
-]);
+const MAX_ROOT_REPOS = 200;
+const README_NAME = /^readme\.md$/i;
 
 const APP_NAMES: Record<Exclude<DocumentOpener, "default" | "finder">, string> = {
   cursor: "Cursor",
@@ -51,7 +32,7 @@ const runOpen = (args: readonly string[]): Promise<{ code: number; stderr: strin
     });
   });
 
-const openPath = async (
+export const openPath = async (
   path: string,
   opener: DocumentOpener,
   kind: "dir" | "file"
@@ -71,63 +52,41 @@ const openPath = async (
   return { ok: false, message: `無法開啟路徑：${redactSecrets(result.stderr.trim()).slice(0, ERROR_TEXT_MAX) || "未知錯誤"}` };
 };
 
-interface DocumentTarget {
+export interface DocumentTarget {
   label: string;
   folder: string;
 }
 
-const readmeLabel = (target: DocumentTarget, path: string): string => {
-  const rel = relative(target.folder, path);
-  return `${target.label} · ${rel && !rel.startsWith("..") ? rel : basename(path)}`;
-};
-
-const findReadmes = (folder: string): string[] => {
+/** 只取專案根目錄的 README.md；子資料夾的、README.ja.md 這類其他檔名一律不收。 */
+export const findReadme = (folder: string): string | null => {
   try {
     if (!lstatSync(folder).isDirectory()) {
-      return [];
+      return null;
     }
+    const entry = readdirSync(folder, { withFileTypes: true }).find((item) => item.isFile() && README_NAME.test(item.name));
+    return entry ? join(folder, entry.name) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** 專案根目錄底下第一層、含 .git 的資料夾（worktree 的 .git 是檔案，一樣算）。 */
+export const findRepoFolders = (root: string): string[] => {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
   } catch {
     return [];
   }
-
-  const found: string[] = [];
-  let scanned = 0;
-  const walk = (dir: string, depth: number): void => {
-    if (found.length >= MAX_READMES_PER_TARGET || scanned >= MAX_SCAN_ENTRIES) {
-      return;
-    }
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    scanned += entries.length;
-
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (found.length >= MAX_READMES_PER_TARGET) {
-        return;
-      }
-      if (entry.isFile() && README_NAME.test(entry.name)) {
-        found.push(join(dir, entry.name));
-      }
-    }
-    if (depth >= MAX_SCAN_DEPTH) {
-      return;
-    }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || SKIPPED_DIRS.has(entry.name)) {
-        continue;
-      }
-      walk(join(dir, entry.name), depth + 1);
-    }
-  };
-
-  walk(folder, 0);
-  return found;
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => join(root, entry.name))
+    .filter((folder) => existsSync(join(folder, ".git")))
+    .slice(0, MAX_ROOT_REPOS);
 };
 
-const documentTargets = (db: Db): DocumentTarget[] => {
+export const documentTargets = (db: Db): DocumentTarget[] => {
   const seen = new Set<string>();
   const targets: DocumentTarget[] = [];
   for (const project of listProjects(db)) {
@@ -149,25 +108,36 @@ const documentTargets = (db: Db): DocumentTarget[] => {
     seen.add(folder);
     targets.push({ label: basename(folder) || folder, folder });
   }
+  const root = readDocumentRoot(db);
+  for (const repoFolder of root === "" ? [] : findRepoFolders(root)) {
+    const folder = normalize(repoFolder);
+    if (seen.has(folder)) {
+      continue;
+    }
+    seen.add(folder);
+    targets.push({ label: basename(folder), folder });
+  }
   return targets;
 };
 
-const discoverReadmes = (db: Db): DocumentShortcut[] => {
+export const discoverReadmes = (db: Db): DocumentShortcut[] => {
   const shortcuts: DocumentShortcut[] = [];
   let id = -1;
   for (const target of documentTargets(db)) {
-    for (const path of findReadmes(target.folder)) {
-      shortcuts.push({
-        id,
-        label: readmeLabel(target, path),
-        path,
-        opener: "default",
-        source: "project-readme",
-        createdAt: 0,
-        updatedAt: 0
-      });
-      id -= 1;
+    const path = findReadme(target.folder);
+    if (path === null) {
+      continue;
     }
+    shortcuts.push({
+      id,
+      label: `${target.label} · README.md`,
+      path,
+      opener: DEFAULT_DOCUMENT_OPENER,
+      source: "project-readme",
+      createdAt: 0,
+      updatedAt: 0
+    });
+    id -= 1;
   }
   return shortcuts;
 };

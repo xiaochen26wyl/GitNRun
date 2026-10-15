@@ -1,6 +1,7 @@
 import type { AiResult, AiSettings, AiUsage, ConflictReport, OutgoingPreview } from "@shared/ai";
-import type { AppSettings, AppSettingsPatch, BackupFileInfo, RestoreSummary } from "@shared/app-settings";
+import type { AppSettings, AppSettingsPatch, BackupFileInfo, DataUsage, RestoreSummary } from "@shared/app-settings";
 import type { BranchRuleFormInput, BranchRuleView } from "@shared/branch-template";
+import type { BrandColorMap } from "@shared/brand";
 import type { CommandOutputEvent } from "@shared/command-output";
 import type { DocumentShortcut, DocumentShortcutInput } from "@shared/documents";
 import type { EventPage, EventQuery, PushEvent } from "@shared/events";
@@ -72,7 +73,10 @@ export const IPC = {
   documentsSave: "documents:save",
   documentsRemove: "documents:remove",
   documentsOpen: "documents:open",
+  documentsGetRoot: "documents:get-root",
+  documentsSetRoot: "documents:set-root",
   gitLiteOverview: "git-lite:overview",
+  brandColors: "brand:colors",
   aiSettingsGet: "ai:settings:get",
   aiSettingsSave: "ai:settings:save",
   aiUsage: "ai:usage",
@@ -82,6 +86,7 @@ export const IPC = {
   aiSuggestEvent: "ai:suggest-event",
   aiConflicts: "ai:conflicts",
   clipboardWrite: "clipboard:write",
+  externalOpen: "external:open",
   webhookSettingsGet: "webhook:settings:get",
   webhookSettingsSave: "webhook:settings:save",
   webhookStatus: "webhook:status",
@@ -90,6 +95,7 @@ export const IPC = {
   webhookRemoveSecret: "webhook:remove-secret",
   appSettingsGet: "app-settings:get",
   appSettingsSave: "app-settings:save",
+  appSettingsDataUsage: "app-settings:data-usage",
   backupsList: "backups:list",
   backupsNow: "backups:now",
   backupsRestore: "backups:restore"
@@ -195,7 +201,12 @@ export interface GitNRunApi {
   saveDocumentShortcut(input: DocumentShortcutInput): Promise<DocumentShortcut>;
   removeDocumentShortcut(id: number): Promise<void>;
   openDocumentShortcut(id: number): Promise<void>;
+  /** 專案根目錄：底下每個含 .git 的子資料夾都會自動掃 README；空字串 = 關閉。 */
+  getDocumentRoot(): Promise<string>;
+  setDocumentRoot(path: string): Promise<string>;
   getGitLiteOverview(): Promise<GitLiteOverview>;
+  /** 各專案 README「品牌配色 → 主要配色」的主色：資料夾（已正規化）→ 大寫 #RRGGBB，沒有品牌色的資料夾不會出現。 */
+  getBrandColors(): Promise<BrandColorMap>;
   /** 拖曳進視窗的檔案／資料夾的本機路徑（Electron 不再提供 File.path，要透過 preload 取得）。 */
   pathForFile(file: DroppedFile): string;
 
@@ -210,6 +221,8 @@ export interface GitNRunApi {
   suggestForEvent(eventId: number): Promise<AiResult>;
   predictConflicts(projectId: number, against?: string): Promise<ConflictReport>;
   copyText(text: string): Promise<void>;
+  /** 用系統瀏覽器開啟網址；主程序只放行 https://github.com/settings/ 底下的頁面（建立 token 的教學用）。 */
+  openExternalLink(url: string): Promise<void>;
 
   getWebhookSettings(): Promise<WebhookSettings>;
   saveWebhookSettings(settings: WebhookSettings): Promise<WebhookSettings>;
@@ -221,6 +234,7 @@ export interface GitNRunApi {
 
   getAppSettings(): Promise<AppSettings>;
   saveAppSettings(patch: AppSettingsPatch): Promise<AppSettings>;
+  getDataUsage(): Promise<DataUsage>;
   listBackups(): Promise<BackupFileInfo[]>;
   backupNow(): Promise<{ written: boolean }>;
   /** 只能還原備份資料夾裡的檔案；還原後規則一律回到「寫入動作需確認」。金鑰不在備份裡，需重新輸入。 */

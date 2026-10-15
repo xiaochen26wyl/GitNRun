@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { rankByChangedFiles, type GitLiteProject } from "@shared/git-lite";
 import { createGitLiteHandlers } from "@main/git-lite/handlers";
 import { addRunFolder } from "@main/run/store";
 import { createVault } from "@main/vault/vault";
@@ -55,6 +56,32 @@ describe("git-lite handlers", () => {
     assert.ok(calls.every((call) => call.cwd === "/work/app"));
   });
 
+  it("includes repos found under the project root and dedupes against added folders", async () => {
+    const db = createTestDb();
+    addRunFolder(db, "/work/app");
+    const handlers = createGitLiteHandlers({
+      db,
+      vault: createVault(db, createFakeCipher()),
+      runGit: async () => result("", 1),
+      fetchFn: async () => {
+        throw new Error("should not fetch");
+      },
+      discoverRepoFolders: () => ["/work/alpha", "/work/app/", "/work/beta"]
+    });
+
+    const overview = await handlers.overview();
+
+    assert.deepEqual(
+      overview.projects.map((project) => [project.label, project.folder]),
+      [
+        ["app", "/work/app"],
+        ["alpha", "/work/alpha"],
+        ["beta", "/work/beta"]
+      ]
+    );
+    assert.equal(new Set(overview.projects.map((project) => project.id)).size, 3);
+  });
+
   it("reports non-git folders and skips issues when no token is configured", async () => {
     const db = createTestDb();
     addRunFolder(db, "/work/plain");
@@ -73,5 +100,16 @@ describe("git-lite handlers", () => {
     assert.equal(overview.projects[0]?.isGitRepo, false);
     assert.equal(overview.projects[0]?.statusError, "不是 git repo");
     assert.deepEqual(overview.projects[0]?.issues, []);
+  });
+
+  it("ranks projects by changed file count, non-git last", () => {
+    const make = (label: string, changedFiles: number, untrackedFiles = 0, isGitRepo = true): GitLiteProject => ({
+      id: label, label, folder: `/w/${label}`, source: "folder", isGitRepo, branch: null, upstream: null,
+      ahead: 0, behind: 0, changedFiles, stagedFiles: 0, unstagedFiles: 0, untrackedFiles,
+      repo: null, issues: [], statusError: null, issueError: null
+    });
+    const input = [make("plain", 0, 0, false), make("b", 2), make("a", 5), make("c", 2, 3)];
+    assert.deepEqual(rankByChangedFiles(input).map((p) => p.label), ["a", "c", "b", "plain"]);
+    assert.equal(input[0]?.label, "plain");
   });
 });

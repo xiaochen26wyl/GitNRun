@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { basename, normalize } from "node:path";
+import { normalizeFolderPath } from "@shared/launcher";
 import type { GitLiteIssue, GitLiteOverview, GitLiteProject, GitLiteRepo } from "@shared/git-lite";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
@@ -11,6 +12,8 @@ export interface GitLiteHandlersDeps {
   runGit: GitRunner;
   vault: Pick<Vault, "getStatus" | "useSecret">;
   fetchFn: typeof fetch;
+  /** 專案根目錄（設定頁）底下掃到的 repo 資料夾。 */
+  discoverRepoFolders?: () => string[];
 }
 
 export interface GitLiteHandlers {
@@ -100,14 +103,22 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
     const result: Target[] = [];
     for (const project of listProjects(deps.db)) {
       if (!project.localPath) continue;
-      if (seen.has(project.localPath)) continue;
-      seen.add(project.localPath);
-      result.push({ id: `p:${project.id}`, label: project.name, folder: project.localPath, source: "project" });
+      const path = normalizeFolderPath(normalize(project.localPath));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      result.push({ id: `p:${project.id}`, label: project.name, folder: path, source: "project" });
     }
     for (const folder of listRunFolders(deps.db)) {
-      if (seen.has(folder.path)) continue;
-      seen.add(folder.path);
-      result.push({ id: `f:${folder.id}`, label: basename(folder.path) || folder.path, folder: folder.path, source: "folder" });
+      const path = normalizeFolderPath(normalize(folder.path));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      result.push({ id: `f:${folder.id}`, label: basename(path) || path, folder: path, source: "folder" });
+    }
+    for (const discovered of deps.discoverRepoFolders?.() ?? []) {
+      const path = normalizeFolderPath(normalize(discovered));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      result.push({ id: `r:${path}`, label: basename(path) || path, folder: path, source: "folder" });
     }
     return result;
   };

@@ -39,3 +39,10 @@ export interface GitLiteOverview {
   githubTokenConfigured: boolean;
   projects: GitLiteProject[];
 }
+
+/** 依變更檔案數由多到少排名；同數量比未追蹤檔，再依名稱；非 git repo 排最後。 */
+export const rankByChangedFiles = (projects: readonly GitLiteProject[]): GitLiteProject[] =>
+  [...projects].sort((a, b) => {
+    if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
+    return b.changedFiles - a.changedFiles || b.untrackedFiles - a.untrackedFiles || a.label.localeCompare(b.label);
+  });

@@ -6,7 +6,7 @@ import {
   RUN_MANIFEST_FILE,
   countFreshPorts,
   describeCommand,
-  isFlutterRunCommand,
+  mobilePlatformOf,
   normalizeRunAccount,
   parseRunTargetId,
   passcodeSecretName,
@@ -15,11 +15,13 @@ import {
   runServiceButtonStates,
   selectServices,
   urlForPort,
+  type MobilePlatform,
   type RunAction,
   type RunActionResult,
   type RunFailureReason,
   type RunManifest,
   type RunOverview,
+  type RunServiceSpec,
   type RunServiceState,
   type RunServiceView,
   type RunStartSelection,
@@ -51,11 +53,19 @@ export interface RunHandlerDeps {
   itermAvailable: () => boolean;
   inspect: (path: string) => Promise<"dir" | "file" | "missing">;
   launchTabs: (tabs: ItermTab[]) => Promise<{ code: number; stderr: string }>;
-  sendTextToTabs: (text: "r" | "R", sessionNames: string[]) => Promise<{ code: number; stderr: string }>;
   stopPorts: (ports: number[]) => Promise<{ code: number; stderr: string }>;
+  closeTabs: (sessionNames: string[]) => Promise<{ code: number; stderr: string }>;
+  /** 關閉該平台目前開著的模擬器；沒有開著的模擬器算成功。 */
+  closeSimulator: (platform: MobilePlatform) => Promise<{ code: number; stderr: string }>;
   /** 原生確認對話框；使用者按「允許」才回傳 true。 */
   confirmCommands: (request: ConfirmCommandsRequest) => Promise<boolean>;
   openUrl: (url: string) => Promise<void>;
+  /** 猜服務用的框架（Django、Next.js…）；沒注入或辨識不出來都是 null，失敗不影響總覽。 */
+  detectFramework?: (folder: string, spec: RunServiceSpec) => Promise<string | null>;
+  /** 專案資料夾根目錄的 README.md 路徑；找不到回傳 null。 */
+  findReadme: (folder: string) => string | null;
+  /** 用文件預設的編輯器開檔；路徑一律由 findReadme 算出，不接受畫面傳入。 */
+  openDocument: (path: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   /** dev 通關密碼存在密鑰保險庫；這裡只會讀狀態、刪除、以及交給 copySecret。 */
   vault: Pick<Vault, "isAvailable" | "getStatus" | "delete" | "useSecret">;
   /** 把密碼放進剪貼簿並在一段時間後清掉；明文只在呼叫期間經手。 */
@@ -97,6 +107,7 @@ interface Session {
 
 export const DEFAULT_STARTING_GRACE_MS = 90_000;
 const ERROR_TEXT_MAX = 300;
+const SIMULATOR_LABEL: Record<MobilePlatform, string> = { ios: "iOS", android: "Android" };
 
 const fail = (reason: RunFailureReason, message: string): RunActionResult => ({ ok: false, reason, message });
 
@@ -170,7 +181,8 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       folder: target.folder,
       source: target.source,
       account: getRunAccount(db, target.id),
-      passcode: deps.vault.getStatus(passcodeSecretName(target.id))
+      passcode: deps.vault.getStatus(passcodeSecretName(target.id)),
+      readme: deps.findReadme(target.folder) === null ? { enabled: false, reason: "找不到 README.md" } : { enabled: true, reason: null }
     };
     if (loaded.status !== "ok") {
       const manifest = loaded.status;
@@ -192,7 +204,6 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         const serviceForButtons = {
           role: spec.role,
           state,
-          hotReloadable: isFlutterRunCommand(spec.command),
           hasPort: spec.port,
           hasSession: !spec.port && session?.startedAt[spec.name] !== undefined
         };
@@ -202,8 +213,8 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           port,
           url: port === null ? null : urlForPort(port),
           state,
-          hotReloadable: serviceForButtons.hotReloadable,
           command: describeCommand(spec),
+          framework: (await deps.detectFramework?.(target.folder, spec).catch(() => null)) ?? null,
           buttons: runServiceButtonStates(serviceForButtons, itermAvailable)
         };
       })
@@ -219,7 +230,6 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         services: services.map((service, index) => ({
           role: service.role,
           state: service.state,
-          hotReloadable: service.hotReloadable,
           hasPort: loaded.manifest.services[index]?.port === true,
           hasSession: loaded.manifest.services[index]?.port !== true && session?.startedAt[service.name] !== undefined
         })),
@@ -253,52 +263,38 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { ok: true, message: `已開啟 ${urls.join("、")}` };
   };
 
+  const openReadme = async (target: Target): Promise<RunActionResult> => {
+    const path = deps.findReadme(target.folder);
+    if (path === null) {
+      return fail("no-readme", "找不到 README.md");
+    }
+    const result = await deps.openDocument(path);
+    if (!result.ok) {
+      return fail("failed", result.message);
+    }
+    log("info", `已開啟 ${target.label} 的 README.md`);
+    return { ok: true, message: "已開啟 README.md" };
+  };
+
   const stopListeningCommand = (port: number): string =>
     `kill -TERM $(lsof -ti tcp:${port}) 2>/dev/null || true; sleep 0.5;`;
 
-  const sendFlutterHotkey = async (target: Target, manifest: RunManifest, text: "r" | "R", serviceName?: string): Promise<RunActionResult> => {
-    const session = sessions.get(target.id);
-    if (!session) {
-      return fail("not-running", "Flutter 尚未啟動");
-    }
-    if (!deps.itermAvailable()) {
-      return fail("iterm-missing", "找不到 iTerm2，請先安裝");
-    }
-
-    const names: string[] = [];
-    for (const spec of manifest.services) {
-      if (serviceName !== undefined && spec.name !== serviceName) continue;
-      if (!isFlutterRunCommand(spec.command) || session.startedAt[spec.name] === undefined) {
-        continue;
-      }
-      if (spec.port) {
-        const { state } = await serviceState(session, spec.name);
-        if (state === "stopped") {
-          continue;
-        }
-      }
-      names.push(runSessionName(target.id, spec.name));
-    }
-    if (serviceName !== undefined && !manifest.services.some((spec) => spec.name === serviceName && isFlutterRunCommand(spec.command))) {
-      return fail("unknown-service", "找不到這個 Flutter run 服務");
-    }
-    if (names.length === 0) {
-      return fail("not-running", "Flutter 尚未啟動");
-    }
-
-    const result = await deps.sendTextToTabs(text, names);
-    if (result.code !== 0) {
-      if (AUTOMATION_DENIED.test(result.stderr)) {
-        return fail("permission-denied", "macOS 沒有允許 devRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
-      }
+  /** 這次結束的服務裡，有哪些手機平台就關哪些模擬器（iOS 在前）；只關開過的平台，一般服務不動。 */
+  const closeSimulators = async (
+    target: Target,
+    names: readonly string[]
+  ): Promise<{ platforms: MobilePlatform[]; failure: RunActionResult | null }> => {
+    const used = new Set(names.map((name) => mobilePlatformOf(name)));
+    const platforms = (["ios", "android"] as const).filter((platform) => used.has(platform));
+    let failure: RunActionResult | null = null;
+    for (const platform of platforms) {
+      const result = await deps.closeSimulator(platform);
+      if (result.code === 0) continue;
       const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
-      log("warn", `無法送出 Flutter ${text === "r" ? "hot reload" : "hot restart"}：${detail}`);
-      return fail("failed", `無法送出熱更新快捷鍵：${detail}`);
+      log("warn", `已結束 ${target.label}，但無法關閉 ${SIMULATOR_LABEL[platform]} 模擬器：${detail}`);
+      if (failure === null) failure = fail("failed", `服務已結束，但無法關閉 ${SIMULATOR_LABEL[platform]} 模擬器：${detail}`);
     }
-
-    const label = text === "r" ? "熱更新" : "熱啟動";
-    log("info", `已對 ${target.label} 送出 Flutter ${label}（${text}）`);
-    return { ok: true, message: `已送出 Flutter ${label}（${text}）` };
+    return { platforms, failure };
   };
 
   const stop = async (target: Target, manifest: RunManifest, serviceName?: string): Promise<RunActionResult> => {
@@ -311,14 +307,19 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     const active: Array<{ name: string; port: number }> = [];
+    // 有開過分頁的服務都要關分頁：沒有 port 的服務、以及已經掛掉但分頁還開著的服務也包含在內。
+    const opened: string[] = [];
     for (const spec of manifest.services) {
       if (serviceName !== undefined && spec.name !== serviceName) continue;
       const { state, port } = await serviceState(session, spec.name);
       if (state !== "stopped" && port !== null) {
         active.push({ name: spec.name, port });
       }
+      if ((state !== "stopped" && port !== null) || session.startedAt[spec.name] !== undefined) {
+        opened.push(spec.name);
+      }
     }
-    if (active.length === 0) {
+    if (opened.length === 0) {
       if (serviceName === undefined) {
         sessions.delete(target.id);
         await deps.writePortsFile(target.folder, {}, deps.now());
@@ -326,18 +327,21 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       return fail("nothing-to-do", "尚未啟動");
     }
 
-    const result = await deps.stopPorts(active.map((item) => item.port));
-    if (result.code !== 0) {
-      const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
-      log("warn", `無法停止 ${target.label}：${detail}`);
-      return fail("failed", `無法停止：${detail}`);
+    if (active.length > 0) {
+      const result = await deps.stopPorts(active.map((item) => item.port));
+      if (result.code !== 0) {
+        const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+        log("warn", `無法結束 ${target.label}：${detail}`);
+        return fail("failed", `無法結束：${detail}`);
+      }
     }
 
-    for (const item of active) {
-      delete session.ports[item.name];
-      delete session.startedAt[item.name];
+    // 程序已停止，狀態先清掉；分頁關不掉時不能讓畫面還以為服務在跑。
+    for (const name of opened) {
+      delete session.ports[name];
+      delete session.startedAt[name];
     }
-    if (Object.keys(session.ports).length === 0) {
+    if (Object.keys(session.ports).length === 0 && Object.keys(session.startedAt).length === 0) {
       sessions.delete(target.id);
     } else {
       sessions.set(target.id, session);
@@ -352,9 +356,28 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
     await deps.writePortsFile(target.folder, known, deps.now());
 
-    const names = active.map((item) => item.name);
-    log("info", `已停止 ${target.label}：${names.join("、")}`);
-    return { ok: true, message: `已停止 ${names.length} 個服務：${names.join("、")}` };
+    let tabFailure: RunActionResult | null = null;
+    if (deps.itermAvailable()) {
+      const closed = await deps.closeTabs(opened.map((name) => runSessionName(target.id, name)));
+      if (closed.code !== 0) {
+        if (AUTOMATION_DENIED.test(closed.stderr)) {
+          tabFailure = fail("permission-denied", "服務已結束，但 macOS 沒有允許 GitNRun 控制 iTerm2，分頁沒有關閉。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+        } else {
+          const detail = closed.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+          log("warn", `已結束 ${target.label}，但無法關閉 iTerm2 分頁：${detail}`);
+          tabFailure = fail("failed", `服務已結束，但無法關閉 iTerm2 分頁：${detail}`);
+        }
+      }
+    }
+
+    // 手機服務結束時連模擬器一起關；分頁關不掉也照關，兩邊的失敗各自記錄。
+    const simulators = await closeSimulators(target, opened);
+    if (tabFailure !== null) return tabFailure;
+    if (simulators.failure !== null) return simulators.failure;
+
+    const simulatorNote = simulators.platforms.map((platform) => `，並關閉 ${SIMULATOR_LABEL[platform]} 模擬器`).join("");
+    log("info", `已結束 ${target.label}：${opened.join("、")}${simulatorNote}`);
+    return { ok: true, message: `已結束 ${opened.length} 個服務並關閉終端機分頁：${opened.join("、")}${simulatorNote}` };
   };
 
   const start = async (
@@ -467,6 +490,10 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       if (!target) {
         return fail("unknown-target", "找不到這個專案");
       }
+      // README 與啟動描述檔無關，沒有描述檔的專案也要能開。
+      if (action.scope === "project" && action.action === "readme") {
+        return openReadme(target);
+      }
       const loaded = await deps.loadManifest(target.folder);
       if (loaded.status === "missing") {
         return fail("no-manifest", "找不到可啟動服務");
@@ -482,12 +509,6 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
       if (action.action === "stop") {
         return stop(target, loaded.manifest, action.service);
-      }
-      if (action.action === "hot-reload") {
-        return sendFlutterHotkey(target, loaded.manifest, "r", action.service);
-      }
-      if (action.action === "hot-restart") {
-        return sendFlutterHotkey(target, loaded.manifest, "R", action.service);
       }
       return start(target, loaded, { service: action.service }, action.action === "restart");
     },

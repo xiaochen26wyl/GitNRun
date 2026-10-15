@@ -1,5 +1,5 @@
-import { app, dialog } from "electron";
 import type { ConfirmDecision, ConfirmRequest } from "@shared/rule-runs";
+import { native } from "@main/native/bridge";
 import { formatConfirmText } from "@main/rules/confirm-text";
 
 export const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
@@ -12,20 +12,21 @@ export const showConfirmDialog = async (request: ConfirmRequest, timeoutMs: numb
   const { message, detail } = formatConfirmText(request);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  app.dock?.bounce("critical");
+  native().bounceDock();
 
   try {
-    const { response } = await dialog.showMessageBox({
-      type: "warning",
-      title: "GitNRun",
-      message,
-      detail,
-      buttons: ["拒絕", "允許這一次"],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      signal: controller.signal
-    });
+    const response = await native().confirm(
+      {
+        kind: "warning",
+        title: "GitNRun",
+        message,
+        detail,
+        buttons: ["拒絕", "允許這一次"],
+        defaultId: 0,
+        cancelId: 0
+      },
+      { signal: controller.signal }
+    );
     if (controller.signal.aborted) {
       return "timeout";
     }

@@ -1,10 +1,13 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", sans-serif;
   font-size: 14px;
+  background: var(--bg);
+  --bg: #ffffff;
   --border: color-mix(in srgb, currentColor 18%, transparent);
   --soft: color-mix(in srgb, currentColor 6%, transparent);
-  --accent: #2563eb;
+  --accent: #15803d;
+  --accent-text: #ffffff;
   --warn: #c2410c;
   --ok: #15803d;
 }
@@ -31,10 +34,10 @@ select {
 
 button {
   padding: 5px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  background: var(--soft);
-  color: inherit;
+  background: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
 }
 
@@ -45,6 +48,7 @@ button:disabled {
 
 button.danger {
   border-color: var(--warn);
+  background: var(--bg);
   color: var(--warn);
 }
 
@@ -71,7 +75,7 @@ select {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 14px;
 }
 
 .badge {
@@ -80,7 +84,7 @@ select {
   margin-left: 4px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .warn-badge {
@@ -116,18 +120,22 @@ select {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   flex: 1;
 }
 
 .tabs button {
+  white-space: nowrap;
   border-color: transparent;
   background: transparent;
+  color: inherit;
 }
 
 .tabs button.active {
-  border-color: var(--border);
-  background: var(--soft);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -153,7 +161,7 @@ select {
   padding: 10px 16px;
   border-radius: 8px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-text);
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
 }
 
@@ -162,9 +170,9 @@ select {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  border: 1px solid var(--warn);
+  border: 1px solid var(--accent);
   border-radius: 8px;
-  color: var(--warn);
+  color: var(--accent);
 }
 
 .filters {
@@ -187,6 +195,8 @@ select {
 
 .segmented button {
   border-radius: 0;
+  background: var(--bg);
+  color: var(--accent);
 }
 
 .segmented button:first-child {
@@ -200,7 +210,7 @@ select {
 .segmented button.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--accent-text);
 }
 
 .empty {
@@ -251,7 +261,10 @@ select {
   gap: 4px;
   text-align: left;
   padding: 10px 12px;
+  border-color: var(--border);
   border-radius: 8px;
+  background: var(--soft);
+  color: inherit;
 }
 
 .card.selected {
@@ -287,7 +300,7 @@ select {
 .file-status {
   display: inline-block;
   min-width: 2.5em;
-  font-size: 12px;
+  font-size: 14px;
   opacity: 0.8;
 }
 
@@ -341,8 +354,48 @@ select {
 
 .project-head {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   align-items: baseline;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.project-head .mono {
+  font-size: inherit;
+}
+
+.project-head button,
+.project-head input,
+.project-head .badge,
+.project-head .warn-badge {
+  font-size: 14px;
+}
+
+/* 專案名稱列的色條：底色與文字色由程式依專案指定配色帶入（--brand、--brand-fg），沒有指定時底色取該專案 README 的主色、文字白色。 */
+.project-head.branded {
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--brand);
+  color: var(--brand-fg);
+}
+
+.project-head.branded .muted {
+  opacity: 0.85;
+}
+
+/* 色條上的按鈕與徽章用白底深字，任何色條上都清楚可讀，不與全站綠色按鈕、警示色撞色。 */
+.project-head.branded button,
+.project-head.branded .badge,
+.project-head.branded .warn-badge {
+  border-color: var(--border);
+  background: var(--bg);
+  color: CanvasText;
+}
+
+.project-head.branded .warn-badge {
+  color: var(--warn);
 }
 
 .row-actions {
@@ -351,6 +404,11 @@ select {
   gap: 8px;
   align-items: center;
   margin-top: 4px;
+}
+
+.root-input {
+  flex: 1 1 320px;
+  min-width: 0;
 }
 
 .compact-actions {
@@ -429,7 +487,7 @@ select {
 
 .token-row button {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 14px;
 }
 
 .subpanel {
@@ -454,7 +512,7 @@ select {
   border-radius: 6px;
   background: var(--soft);
   white-space: pre-wrap;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .pre-line {
@@ -512,7 +570,7 @@ select {
 }
 .run-service {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1.2fr) minmax(260px, auto);
+  grid-template-columns: minmax(180px, 1fr) auto;
   gap: 8px 12px;
   align-items: center;
   padding: 8px 0;
@@ -526,16 +584,44 @@ select {
   gap: 8px;
   align-items: center;
 }
-.run-command {
-  font-size: 12px;
+.run-service-title {
+  font-size: 20px;
+  font-weight: 400;
+}
+.run-framework {
+  font-size: 16px;
+  font-weight: 400;
+}
+.run-service-main .status-dot {
+  flex: none;
+}
+.run-platform {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.run-command-wrap {
+  position: relative;
+}
+.run-command-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: min(480px, 80vw);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: Canvas;
+  color: CanvasText;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 14px;
   word-break: break-all;
+  user-select: text;
 }
 .run-service-actions {
   justify-content: flex-end;
-}
-.run-buttons {
-  flex-wrap: wrap;
-  gap: 12px;
 }
 
 .section-head {
@@ -552,33 +638,6 @@ select {
 
 .section-head p {
   margin: 0;
-}
-
-.documents-panel {
-  margin-top: 28px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
-}
-
-.document-form {
-  display: grid;
-  grid-template-columns: minmax(120px, 180px) minmax(220px, 1fr) minmax(120px, 160px) auto;
-  gap: 8px;
-  align-items: end;
-  margin-bottom: 10px;
-}
-
-.document-form label {
-  display: grid;
-  gap: 4px;
-}
-
-.document-dropzone {
-  padding: 12px 16px;
-}
-
-.document-row {
-  gap: 6px;
 }
 
 .breakable {
@@ -601,9 +660,6 @@ select {
 }
 
 @media (max-width: 820px) {
-  .document-form {
-    grid-template-columns: 1fr;
-  }
   .run-service {
     grid-template-columns: 1fr;
   }
@@ -617,7 +673,7 @@ select {
   align-items: center;
 }
 .run-reason {
-  font-size: 12px;
+  font-size: 14px;
 }
 .run-passcode {
   display: grid;
@@ -627,7 +683,7 @@ select {
   border-top: 1px solid var(--border);
 }
 .run-passcode-hint {
-  font-size: 12px;
+  font-size: 14px;
 }
 .run-passcode .secret-controls {
   align-items: center;
@@ -647,4 +703,44 @@ select {
 }
 .status-dot.starting {
   background: var(--warn);
+}
+
+/* 設定頁的段落與按鈕間距：只掛在 .settings-page 底下，不影響其他頁面的 .row-actions／.plain-list。 */
+.settings-page > .panel + .panel {
+  margin-top: 28px;
+}
+
+.settings-page h3 {
+  margin-top: 24px;
+}
+
+.settings-page h2 + h3 {
+  margin-top: 16px;
+}
+
+.settings-page div.row-actions,
+.settings-page form.row-actions {
+  margin: 12px 0;
+}
+
+.settings-page .plain-list,
+.settings-page ul.steps,
+.settings-page ol.steps {
+  margin-top: 12px;
+}
+
+.settings-page .plain-list {
+  gap: 8px;
+}
+
+.settings-page .retention-list {
+  gap: 14px;
+}
+
+.settings-page .retention-list p {
+  margin: 2px 0 0;
+}
+
+.settings-page .secret-controls {
+  flex-wrap: wrap;
 }

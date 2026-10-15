@@ -7,6 +7,7 @@ import { asAppSettingsArgs, asBackupNameArgs, asNoArgs } from "@main/ipc-validat
 export const registerAppSettingsIpc = (handlers: AppSettingsHandlers): void => {
   handleIpc(IPC.appSettingsGet, asNoArgs, () => handlers.get());
   handleIpc(IPC.appSettingsSave, asAppSettingsArgs, (patch) => handlers.save(patch as AppSettingsPatch));
+  handleIpc(IPC.appSettingsDataUsage, asNoArgs, () => handlers.dataUsage());
   handleIpc(IPC.backupsList, asNoArgs, () => handlers.listBackups());
   handleIpc(IPC.backupsNow, asNoArgs, () => handlers.backupNow());
   handleIpc(IPC.backupsRestore, asBackupNameArgs, (name) => handlers.restore(name));

@@ -5,6 +5,7 @@ import {
   asBooleanArgs,
   asBranchRuleSaveArgs,
   asEventQueryArgs,
+  asExternalLinkArgs,
   asIdArgs,
   asLogQueryArgs,
   asNoArgs,
@@ -14,6 +15,7 @@ import {
   asStartWorkPreviewArgs,
   asStartWorkRunArgs
 } from "@main/ipc-validation";
+import { native } from "@main/native/bridge";
 
 export const registerAppIpc = (handlers: AppHandlers): void => {
   handleIpc(IPC.projectsList, asNoArgs, () => handlers.listProjects());
@@ -36,4 +38,7 @@ export const registerAppIpc = (handlers: AppHandlers): void => {
   handleIpc(IPC.startWorkRun, asStartWorkRunArgs, (projectId, input, expected) =>
     handlers.runStartWork(projectId, input, expected)
   );
+
+  // 網址已在驗證器限縮到 github.com/settings/，這裡不接受任何其他目標。
+  handleIpc(IPC.externalOpen, asExternalLinkArgs, (url) => native().openExternal(url));
 };

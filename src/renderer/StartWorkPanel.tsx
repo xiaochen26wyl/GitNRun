@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { COMMON_TYPES, parseTemplate, templateTokens } from "@shared/branch-template";
 import { errorMessage } from "@shared/format";
 import type { Project } from "@shared/projects";
+import { useProjectHead } from "./hooks";
 import type { StartWorkInput, StartWorkPlan, StartWorkResult } from "@shared/start-work";
 
 /**
@@ -9,6 +10,7 @@ import type { StartWorkInput, StartWorkPlan, StartWorkResult } from "@shared/sta
  * 一定先預覽（唯讀）再確認；執行時主程序會再核對名稱，與預覽不同就拒絕。
  */
 export const StartWorkPanel = ({ project, onClose }: { project: Project; onClose: () => void }) => {
+  const headProps = useProjectHead();
   const [needsType, setNeedsType] = useState(false);
   const [needsSlug, setNeedsSlug] = useState(false);
   const [type, setType] = useState("feat");
@@ -73,7 +75,7 @@ export const StartWorkPanel = ({ project, onClose }: { project: Project; onClose
 
   return (
     <div className="subpanel">
-      <div className="project-head">
+      <div {...headProps(project.localPath)}>
         <strong>開工：{project.name}</strong>
         <button type="button" onClick={onClose}>
           關閉

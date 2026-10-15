@@ -3,6 +3,9 @@
 export const DOCUMENT_OPENERS = ["default", "finder", "cursor", "vscode", "textedit"] as const;
 export type DocumentOpener = (typeof DOCUMENT_OPENERS)[number];
 
+/** 沒指定開啟方式時（自動發現的 README、新增捷徑的預設選項）一律用 Cursor。 */
+export const DEFAULT_DOCUMENT_OPENER: DocumentOpener = "cursor";
+
 export interface DocumentShortcut {
   id: number;
   label: string;
@@ -75,7 +78,7 @@ export const validateDocumentShortcutInput = (raw: unknown): DocumentShortcutVal
 
   const opener =
     input.opener === undefined
-      ? "default"
+      ? DEFAULT_DOCUMENT_OPENER
       : DOCUMENT_OPENERS.find((candidate) => candidate === input.opener);
   if (!opener) {
     errors.push("開啟方式不正確");
@@ -83,5 +86,5 @@ export const validateDocumentShortcutInput = (raw: unknown): DocumentShortcutVal
 
   return errors.length > 0
     ? { ok: false, errors }
-    : { ok: true, value: { id, label, path, opener: opener ?? "default" } };
+    : { ok: true, value: { id, label, path, opener: opener ?? DEFAULT_DOCUMENT_OPENER } };
 };

@@ -11,7 +11,6 @@ import type { Logger } from "@main/logger";
 import { createIngest, type IngestFn } from "@main/monitor/ingest";
 import { PollScheduler } from "@main/monitor/scheduler";
 import { createMonitorService, type MonitorService } from "@main/monitor/service";
-import { createNotifier } from "@main/notifier";
 import type { Vault } from "@main/vault/vault";
 
 const changeListeners = new Set<(change: MonitorChange) => void>();
@@ -31,21 +30,19 @@ export const emitMonitorChange = (change: MonitorChange): void => {
 };
 
 export interface EventPipelineOptions {
-  /** 使用者點擊通知時要做的事（通常是帶出主視窗）。 */
-  onNotificationClick: () => void;
-  /** 桌面通知之後要處理新事件的下游（例如規則引擎）；各自失敗不影響其他下游。 */
+  /** 新事件的下游（例如規則引擎）；各自失敗不影響其他下游。 */
   onNewEvent?: ReadonlyArray<(event: PushEvent, project: Project) => void | Promise<void>>;
 }
 
 /**
- * 所有事件（輪詢、Webhook）進來的唯一入口：寫入（冪等）→ 分支命名檢查 → 通知 → 規則引擎。
+ * 所有事件（輪詢、Webhook）進來的唯一入口：寫入（冪等）→ 分支命名檢查 → 規則引擎。
  * 兩種來源共用同一份，所以同一次推送不管從哪邊先到，都只會處理一次。
  */
 export const createEventPipeline = (db: Db, logger: Logger, options: EventPipelineOptions): IngestFn =>
   createIngest({
     db,
     isBranchViolation: createBranchChecker(db),
-    onNewEvent: [createNotifier(db, options.onNotificationClick), ...(options.onNewEvent ?? [])],
+    onNewEvent: options.onNewEvent ?? [],
     onError: (error) => logger.log({ category: "system", level: "warn", message: `事件處理失敗：${redact(error)}` })
   });
 

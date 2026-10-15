@@ -14,7 +14,7 @@ import {
 import type { Project } from "@shared/projects";
 import { deleteMapping, getMapping, listMappings, saveMapping } from "@main/db/mappings-repo";
 import { launchTerminal, type LaunchDeps } from "@main/launcher/launch";
-import { ITERM_TABS_SCRIPT, ITERM_WRITE_TEXT_SCRIPT, SCRIPTS, buildItermTabsArgs, buildItermWriteTextArgs, buildOpenArgs, buildOsascriptArgs } from "@main/launcher/osascript";
+import { ITERM_CLOSE_SCRIPT, ITERM_TABS_SCRIPT, SCRIPTS, buildItermCloseArgs, buildItermTabsArgs, buildOpenArgs, buildOsascriptArgs } from "@main/launcher/osascript";
 import { ancestorsOf, buildLaunchTargets, resolveMapping } from "@main/launcher/resolve";
 import { createTestDb } from "./helpers/db";
 
@@ -129,13 +129,13 @@ describe("osascript arguments", () => {
     assert.ok(ITERM_TABS_SCRIPT.some((line) => line.includes("com.googlecode.iterm2")));
   });
 
-  it("sends fixed text to iTerm2 sessions with a constant script and names only as arguments", () => {
-    const names = ['gitnrun p:1 flutter"; rm -rf /', "gitnrun p:2 web"];
-    const args = buildItermWriteTextArgs("r", names);
+  it("closes iTerm2 sessions with a constant script and names only as arguments", () => {
+    const names = ['gitnrun p:1 web"; do shell script "rm -rf /"', "gitnrun p:2 api"];
+    const args = buildItermCloseArgs(names);
     const scriptLines = args.slice(0, args.indexOf("--")).filter((_, index) => index % 2 === 1);
-    assert.deepEqual(scriptLines, [...ITERM_WRITE_TEXT_SCRIPT]);
+    assert.deepEqual(scriptLines, [...ITERM_CLOSE_SCRIPT]);
     assert.ok(scriptLines.every((line) => !line.includes("rm -rf") && !line.includes("gitnrun p:")));
-    assert.deepEqual(args.slice(args.indexOf("--")), ["--", "r", ...names]);
+    assert.deepEqual(args.slice(args.indexOf("--")), ["--", ...names]);
   });
 
   it("targets the apps by bundle id, so a renamed app still works", () => {

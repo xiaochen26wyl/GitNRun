@@ -1,23 +1,24 @@
+import { statSync } from "node:fs";
 import { join } from "node:path";
-import { app } from "electron";
-import { exportConfig, writeBackup } from "@main/db/backup";
+import { isBackupOverdue, nextBackupAt } from "@main/backup-schedule";
+import { exportConfig, listBackups, writeBackup } from "@main/db/backup";
 import { openDatabase, type Db } from "@main/db/database";
 import { migrate } from "@main/db/migrations";
 import { DAY_MS, purgeExpired } from "@main/db/retention";
 import { DEFAULT_RETENTION_DAYS, SETTING_KEYS, getSetting } from "@main/db/settings-repo";
+import { native } from "@main/native/bridge";
 
 /**
- * 資料層的生命週期：開庫、遷移、啟動後的備份與每日清理。
+ * 資料層的生命週期：開庫、遷移、每天 22:00 的備份（錯過則啟動後補）與每日清理。
  * 所有資料都在 userData/data 之下，不寫到任何雲端。
  */
 
-const BACKUP_DEBOUNCE_MS = 5_000;
 const STARTUP_BACKUP_DELAY_MS = 5_000;
 const FIRST_PURGE_DELAY_MS = 30_000;
 
 let database: Db | null = null;
 let backupDir = "";
-let backupTimer: NodeJS.Timeout | null = null;
+let dailyBackupTimer: NodeJS.Timeout | null = null;
 const timers: NodeJS.Timeout[] = [];
 
 export const getBackupDir = (): string => backupDir;
@@ -37,19 +38,27 @@ const runBackup = (): void => {
   }
 };
 
-/** 設定、規則、映射、分支範本變更後呼叫；短時間內多次呼叫會合併成一次備份。 */
-export const backupSoon = (): void => {
-  if (!database) {
-    return;
+/** 最新一份備份的時間；沒有備份或讀不到時回 null。 */
+const latestBackupAt = (): number | null => {
+  const newest = listBackups(backupDir)[0];
+  if (!newest) {
+    return null;
   }
-  if (backupTimer) {
-    clearTimeout(backupTimer);
+  try {
+    return statSync(join(backupDir, newest)).mtimeMs;
+  } catch {
+    return null;
   }
-  backupTimer = setTimeout(() => {
-    backupTimer = null;
+};
+
+/** 排到下一個 22:00；觸發後依當下時間重排，不用固定 24 小時間隔，避免睡眠與夏令時間造成偏移。 */
+const scheduleDailyBackup = (): void => {
+  const delay = Math.max(1_000, nextBackupAt(Date.now()) - Date.now());
+  dailyBackupTimer = setTimeout(() => {
     runBackup();
-  }, BACKUP_DEBOUNCE_MS);
-  backupTimer.unref();
+    scheduleDailyBackup();
+  }, delay);
+  dailyBackupTimer.unref();
 };
 
 const runPurge = (): void => {
@@ -69,14 +78,20 @@ const unrefTimeout = (fn: () => void, ms: number): void => {
 };
 
 export const initDataLayer = (): Db => {
-  const dataDir = join(app.getPath("userData"), "data");
+  const dataDir = join(native().dataDir(), "data");
   backupDir = join(dataDir, "backups");
 
   database = openDatabase(join(dataDir, "gitnrun.db"));
   migrate(database);
 
   // 啟動流程保持輕量：備份與清理延後到視窗顯示之後。
-  unrefTimeout(runBackup, STARTUP_BACKUP_DELAY_MS);
+  // 錯過昨晚 22:00（睡眠、關機）時補一次；內容沒變時 writeBackup 不會多寫檔。
+  unrefTimeout(() => {
+    if (isBackupOverdue(Date.now(), latestBackupAt())) {
+      runBackup();
+    }
+  }, STARTUP_BACKUP_DELAY_MS);
+  scheduleDailyBackup();
   unrefTimeout(() => {
     runPurge();
     const daily = setInterval(runPurge, DAY_MS);
@@ -93,9 +108,9 @@ export const closeDataLayer = (): void => {
     clearInterval(timer);
   }
   timers.length = 0;
-  if (backupTimer) {
-    clearTimeout(backupTimer);
-    backupTimer = null;
+  if (dailyBackupTimer) {
+    clearTimeout(dailyBackupTimer);
+    dailyBackupTimer = null;
   }
   database?.close();
   database = null;

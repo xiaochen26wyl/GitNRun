@@ -78,6 +78,7 @@ describe("assessGithubToken", () => {
     const result = assessGithubToken(FINE_GRAINED, null);
     assert.equal(result.kind, "fine-grained");
     assert.ok(result.warnings[0]?.includes("Contents: Read"));
+    assert.ok(result.warnings[0]?.includes("Issues: Read"));
   });
 });
 

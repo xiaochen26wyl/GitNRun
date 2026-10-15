@@ -13,76 +13,96 @@ import { createTestDb } from "./helpers/db";
 const fakeShortcutApi = (taken: Set<string> = new Set()) => {
   const registered = new Map<string, () => void>();
   const api: ShortcutApi = {
-    register: (accelerator, callback) => {
+    register: async (accelerator, callback) => {
       if (taken.has(accelerator)) return false;
       registered.set(accelerator, callback);
       return true;
     },
-    unregister: (accelerator) => void registered.delete(accelerator)
+    unregister: async (accelerator) => {
+      registered.delete(accelerator);
+    }
   };
   return { api, registered, taken };
 };
 
 describe("shortcut manager", () => {
-  it("registers a shortcut and fires the callback", () => {
+  it("registers a shortcut and fires the callback", async () => {
     const fake = fakeShortcutApi();
     let fired = 0;
     const manager = createShortcutManager(fake.api, () => void (fired += 1));
 
-    assert.equal(manager.apply(DEFAULT_SHORTCUT), true);
+    assert.equal(await manager.apply(DEFAULT_SHORTCUT), true);
     assert.equal(manager.current(), DEFAULT_SHORTCUT);
     fake.registered.get(DEFAULT_SHORTCUT)?.();
     assert.equal(fired, 1);
   });
 
-  it("switches to a new shortcut and releases the old one", () => {
+  it("switches to a new shortcut and releases the old one", async () => {
     const fake = fakeShortcutApi();
     const manager = createShortcutManager(fake.api, () => undefined);
-    manager.apply("Cmd+Shift+T");
-    assert.equal(manager.apply("Cmd+Shift+L"), true);
+    await manager.apply("Cmd+Shift+T");
+    assert.equal(await manager.apply("Cmd+Shift+L"), true);
     assert.deepEqual([...fake.registered.keys()], ["Cmd+Shift+L"]);
   });
 
-  it("keeps the working shortcut when the new one is taken by another app", () => {
+  it("keeps the working shortcut when the new one is taken by another app", async () => {
     const fake = fakeShortcutApi(new Set(["Cmd+Shift+L"]));
     const manager = createShortcutManager(fake.api, () => undefined);
-    manager.apply("Cmd+Shift+T");
+    await manager.apply("Cmd+Shift+T");
 
-    assert.equal(manager.apply("Cmd+Shift+L"), false);
+    assert.equal(await manager.apply("Cmd+Shift+L"), false);
     assert.equal(manager.current(), "Cmd+Shift+T");
     assert.deepEqual([...fake.registered.keys()], ["Cmd+Shift+T"], "the old shortcut still works");
   });
 
-  it("rejects malformed accelerators without touching what is registered", () => {
+  it("rejects malformed accelerators without touching what is registered", async () => {
     const fake = fakeShortcutApi();
     const manager = createShortcutManager(fake.api, () => undefined);
-    manager.apply("Cmd+Shift+T");
+    await manager.apply("Cmd+Shift+T");
     for (const bad of ["T", "Cmd+", "nonsense", ""]) {
-      assert.equal(manager.apply(bad), false, bad);
+      assert.equal(await manager.apply(bad), false, bad);
     }
     assert.equal(manager.current(), "Cmd+Shift+T");
   });
 
-  it("treats a throwing register as a failed registration", () => {
+  it("treats a throwing register as a failed registration", async () => {
     const manager = createShortcutManager(
-      { register: () => { throw new Error("bad accelerator"); }, unregister: () => undefined },
+      { register: async () => { throw new Error("bad accelerator"); }, unregister: async () => undefined },
       () => undefined
     );
-    assert.equal(manager.apply("Cmd+Shift+T"), false);
+    assert.equal(await manager.apply("Cmd+Shift+T"), false);
     assert.equal(manager.current(), null);
   });
 
-  it("can be disabled and disposed", () => {
+  it("can be disabled and disposed", async () => {
     const fake = fakeShortcutApi();
     const manager = createShortcutManager(fake.api, () => undefined);
-    manager.apply("Cmd+Shift+T");
-    assert.equal(manager.apply(null), true);
+    await manager.apply("Cmd+Shift+T");
+    assert.equal(await manager.apply(null), true);
     assert.equal(fake.registered.size, 0);
     assert.equal(manager.current(), null);
 
-    manager.apply("Cmd+Shift+T");
-    manager.dispose();
+    await manager.apply("Cmd+Shift+T");
+    await manager.dispose();
     assert.equal(fake.registered.size, 0);
+  });
+
+  it("runs overlapping changes one after another, so the last request wins and nothing leaks", async () => {
+    const fake = fakeShortcutApi();
+    const manager = createShortcutManager(
+      {
+        register: async (accelerator, callback) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return fake.api.register(accelerator, callback);
+        },
+        unregister: fake.api.unregister
+      },
+      () => undefined
+    );
+    const results = await Promise.all([manager.apply("Cmd+Shift+A"), manager.apply("Cmd+Shift+B"), manager.apply("Cmd+Shift+C")]);
+    assert.deepEqual(results, [true, true, true]);
+    assert.equal(manager.current(), "Cmd+Shift+C");
+    assert.deepEqual([...fake.registered.keys()], ["Cmd+Shift+C"], "only the last one stays registered");
   });
 });
 
@@ -127,11 +147,11 @@ describe("launcher settings", () => {
 });
 
 describe("launcher handlers", () => {
-  const setup = (taken: Set<string> = new Set()) => {
+  const setup = async (taken: Set<string> = new Set()) => {
     const db = createTestDb();
     const fake = fakeShortcutApi(taken);
     const shortcuts = createShortcutManager(fake.api, () => undefined);
-    shortcuts.apply(DEFAULT_SHORTCUT);
+    await shortcuts.apply(DEFAULT_SHORTCUT);
     const launched: string[] = [];
     const state = { changed: 0 };
     const handlers = createLauncherHandlers({
@@ -154,8 +174,8 @@ describe("launcher handlers", () => {
     return { db, handlers, launched, state, shortcuts, project, fake };
   };
 
-  it("saves, lists and deletes mappings, scheduling a backup each time", () => {
-    const t = setup();
+  it("saves, lists and deletes mappings, scheduling a backup each time", async () => {
+    const t = await setup();
     const saved = t.handlers.saveMapping({ pathPattern: "/Users/me/api/", command: " pnpm dev ", recursive: false, terminalApp: "default" });
     assert.equal(saved.pathPattern, "/Users/me/api");
     assert.equal(saved.command, "pnpm dev");
@@ -167,8 +187,8 @@ describe("launcher handlers", () => {
     assert.equal(t.state.changed, 2, "deleting something that is gone changes nothing");
   });
 
-  it("explains why a mapping was rejected", () => {
-    const t = setup();
+  it("explains why a mapping was rejected", async () => {
+    const t = await setup();
     assert.throws(
       () => t.handlers.saveMapping({ pathPattern: "relative", command: "x", recursive: false, terminalApp: "default" }),
       (error) => error instanceof UserFacingError && error.message.includes("絕對路徑")
@@ -177,7 +197,7 @@ describe("launcher handlers", () => {
   });
 
   it("launches a folder, or a project through its registered path", async () => {
-    const t = setup();
+    const t = await setup();
     await t.handlers.launchFolder("/Users/me/api");
     await t.handlers.launchProject(t.project("/Users/me/web").id);
     assert.deepEqual(t.launched, ["/Users/me/api", "/Users/me/web"]);
@@ -188,45 +208,45 @@ describe("launcher handlers", () => {
     assert.equal(t.launched.length, 2);
   });
 
-  it("changes the shortcut only when it can actually be registered", () => {
-    const t = setup(new Set(["Cmd+Shift+L"]));
+  it("changes the shortcut only when it can actually be registered", async () => {
+    const t = await setup(new Set(["Cmd+Shift+L"]));
     assert.equal(t.handlers.getSettings().shortcutRegistered, true);
 
-    const updated = t.handlers.saveSettings({ shortcut: "Cmd+Shift+K" });
+    const updated = await t.handlers.saveSettings({ shortcut: "Cmd+Shift+K" });
     assert.equal(updated.shortcut, "Cmd+Shift+K");
     assert.equal(updated.shortcutRegistered, true);
 
-    assert.throws(() => t.handlers.saveSettings({ shortcut: "Cmd+Shift+L" }), (error) => error instanceof UserFacingError && error.message.includes("已被其他程式使用"));
+    await assert.rejects(t.handlers.saveSettings({ shortcut: "Cmd+Shift+L" }), (error) => error instanceof UserFacingError && error.message.includes("已被其他程式使用"));
     assert.equal(t.handlers.getSettings().shortcut, "Cmd+Shift+K", "the previous, working shortcut is kept");
     assert.equal(t.shortcuts.current(), "Cmd+Shift+K");
 
-    assert.throws(() => t.handlers.saveSettings({ shortcut: "T" }), UserFacingError);
-    assert.equal(t.handlers.saveSettings({ shortcut: null }).shortcut, null);
+    await assert.rejects(t.handlers.saveSettings({ shortcut: "T" }), UserFacingError);
+    assert.equal((await t.handlers.saveSettings({ shortcut: null })).shortcut, null);
     assert.equal(t.shortcuts.current(), null);
   });
 
-  it("validates the default terminal and the selected project", () => {
-    const t = setup();
-    assert.equal(t.handlers.saveSettings({ defaultTerminal: "iterm" }).defaultTerminal, "iterm");
-    assert.equal(t.handlers.saveSettings({ defaultTerminal: "Warp" }).defaultTerminal, "Warp");
+  it("validates the default terminal and the selected project", async () => {
+    const t = await setup();
+    assert.equal((await t.handlers.saveSettings({ defaultTerminal: "iterm" })).defaultTerminal, "iterm");
+    assert.equal((await t.handlers.saveSettings({ defaultTerminal: "Warp" })).defaultTerminal, "Warp");
     for (const bad of ["../x", "", "default"]) {
-      assert.throws(() => t.handlers.saveSettings({ defaultTerminal: bad }), UserFacingError, bad);
+      await assert.rejects(t.handlers.saveSettings({ defaultTerminal: bad }), UserFacingError, bad);
     }
 
     const project = t.project("/Users/me/api");
-    assert.equal(t.handlers.saveSettings({ selectedProjectId: project.id }).selectedProjectId, project.id);
-    assert.throws(() => t.handlers.saveSettings({ selectedProjectId: 999 }), UserFacingError);
-    assert.equal(t.handlers.saveSettings({ selectedProjectId: null }).selectedProjectId, null);
+    assert.equal((await t.handlers.saveSettings({ selectedProjectId: project.id })).selectedProjectId, project.id);
+    await assert.rejects(t.handlers.saveSettings({ selectedProjectId: 999 }), UserFacingError);
+    assert.equal((await t.handlers.saveSettings({ selectedProjectId: null })).selectedProjectId, null);
   });
 
-  it("prefers iTerm2 when it is installed and no default terminal has been saved", () => {
-    const t = setup();
+  it("prefers iTerm2 when it is installed and no default terminal has been saved", async () => {
+    const t = await setup();
     assert.equal(t.handlers.getSettings().defaultTerminal, "terminal");
 
     const db = createTestDb();
     const fake = fakeShortcutApi();
     const shortcuts = createShortcutManager(fake.api, () => undefined);
-    shortcuts.apply(DEFAULT_SHORTCUT);
+    await shortcuts.apply(DEFAULT_SHORTCUT);
     const handlers = createLauncherHandlers({
       db,
       shortcuts,
@@ -237,14 +257,14 @@ describe("launcher handlers", () => {
     assert.equal(handlers.getSettings().defaultTerminal, "iterm");
   });
 
-  it("a rejected change does not partially apply", () => {
-    const t = setup(new Set(["Cmd+Shift+L"]));
-    assert.throws(() => t.handlers.saveSettings({ defaultTerminal: "iterm", shortcut: "Cmd+Shift+L" }));
+  it("a rejected change does not partially apply", async () => {
+    const t = await setup(new Set(["Cmd+Shift+L"]));
+    await assert.rejects(t.handlers.saveSettings({ defaultTerminal: "iterm", shortcut: "Cmd+Shift+L" }));
     assert.equal(t.handlers.getSettings().defaultTerminal, "terminal");
   });
 
-  it("reports which terminals are installed", () => {
-    assert.deepEqual(setup().handlers.availability(), { terminal: true, iterm: false });
+  it("reports which terminals are installed", async () => {
+    assert.deepEqual((await setup()).handlers.availability(), { terminal: true, iterm: false });
   });
 });
 

@@ -8,7 +8,7 @@ import {
   type ProjectMode
 } from "@shared/projects";
 import { errorMessage, formatDateTime, formatRelative } from "@shared/format";
-import { useMonitorChanged } from "./hooks";
+import { useMonitorChanged, useProjectHead, type ProjectHeadAttrs } from "./hooks";
 import { CommitMessagePanel, ConflictPanel } from "./AiAssist";
 import { StartWorkPanel } from "./StartWorkPanel";
 
@@ -102,10 +102,12 @@ const AddProjectForm = ({ onAdded }: { onAdded: () => void }) => {
 const ProjectRow = ({
   project,
   status,
+  headProps,
   onChanged
 }: {
   project: Project;
   status: ProjectPollStatus | undefined;
+  headProps: (path: string | null) => ProjectHeadAttrs;
   onChanged: () => void;
 }) => {
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -125,7 +127,7 @@ const ProjectRow = ({
 
   return (
     <li className="project-row">
-      <div className="project-head">
+      <div {...headProps(project.localPath)}>
         <strong>{project.name}</strong>
         <span className="muted mono">
           {project.owner}/{project.repo}
@@ -242,6 +244,7 @@ export const ProjectsView = ({ onOpenSettings }: Props) => {
 
   useEffect(refresh, [refresh]);
   useMonitorChanged(refresh);
+  const headProps = useProjectHead();
 
   const statusByProject = new Map(status?.projects.map((entry) => [entry.projectId, entry]));
 
@@ -260,7 +263,7 @@ export const ProjectsView = ({ onOpenSettings }: Props) => {
       {projects.length === 0 ? <p className="muted">還沒有專案。</p> : null}
       <ul className="project-list">
         {projects.map((project) => (
-          <ProjectRow key={project.id} project={project} status={statusByProject.get(project.id)} onChanged={refresh} />
+          <ProjectRow key={project.id} project={project} status={statusByProject.get(project.id)} headProps={headProps} onChanged={refresh} />
         ))}
       </ul>
     </section>

@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import { app, dialog } from "electron";
 import { redact } from "@main/log-redaction";
 import type { Logger } from "@main/logger";
+import { native } from "@main/native/bridge";
 import { createCrashGuard, createFaultTracker, fileBackedRestartLog } from "@main/reliability/crash-guard";
 
 /**
@@ -22,7 +22,7 @@ export const installProcessGuards = (options: { getLogger: () => Logger | null }
     maxRestarts: MAX_RESTARTS,
     windowMs: RESTART_WINDOW_MS,
     now: Date.now,
-    ...fileBackedRestartLog(join(app.getPath("userData"), "restarts.json"))
+    ...fileBackedRestartLog(join(native().dataDir(), "restarts.json"))
   });
   const faults = createFaultTracker({ threshold: FAULT_THRESHOLD, windowMs: FAULT_WINDOW_MS, now: Date.now });
 
@@ -38,12 +38,11 @@ export const installProcessGuards = (options: { getLogger: () => Logger | null }
   const fatal = (): void => {
     if (guard.allowRestart()) {
       report("短時間內發生太多錯誤，重新啟動 devRun");
-      app.relaunch();
-      app.exit(0);
+      native().relaunch();
       return;
     }
-    dialog.showErrorBox("devRun 無法穩定執行", "短時間內已經重新啟動多次仍然發生錯誤，為了避免無限重啟，這次不再自動重啟。請到日誌查看原因，或重新開啟 App。");
-    app.exit(1);
+    native().showErrorBox("devRun 無法穩定執行", "短時間內已經重新啟動多次仍然發生錯誤，為了避免無限重啟，這次不再自動重啟。請到日誌查看原因，或重新開啟 App。");
+    native().exit(1);
   };
 
   const onFault = (kind: string, error: unknown): void => {
@@ -55,7 +54,4 @@ export const installProcessGuards = (options: { getLogger: () => Logger | null }
 
   process.on("uncaughtException", (error) => onFault("例外", error));
   process.on("unhandledRejection", (reason) => onFault("Promise 拒絕", reason));
-  app.on("child-process-gone", (_event, details) => {
-    report(`子行程異常結束：${details.type}（${details.reason}）`);
-  });
 };

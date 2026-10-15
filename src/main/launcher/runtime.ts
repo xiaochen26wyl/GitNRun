@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { app, dialog, globalShortcut, Menu, type MenuItemConstructorOptions } from "electron";
 import { TERMINAL_APP_ITERM, TERMINAL_APP_TERMINAL, type LaunchResult, type TerminalAvailability } from "@shared/launcher";
 import type { Db } from "@main/db/database";
 import { listMappings } from "@main/db/mappings-repo";
@@ -16,6 +15,7 @@ import { resolveMapping, buildLaunchTargets } from "@main/launcher/resolve";
 import { readLauncherSettings } from "@main/launcher/settings";
 import { createShortcutManager } from "@main/launcher/shortcut";
 import type { Logger } from "@main/logger";
+import { native, type MenuEntry } from "@main/native/bridge";
 
 const EXEC_TIMEOUT_MS = 15_000;
 
@@ -53,7 +53,7 @@ export interface LauncherRuntimeDeps {
 
 export interface LauncherRuntime {
   handlers: LauncherHandlers;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 }
 
 /** 組裝一鍵啟動：快捷鍵、快速選單、外部開啟請求。 */
@@ -78,12 +78,12 @@ export const createLauncherRuntime = (deps: LauncherRuntimeDeps): LauncherRuntim
     return result;
   };
 
-  const targetItems = (): MenuItemConstructorOptions[] => {
+  const targetItems = (): MenuEntry[] => {
     const targets = buildLaunchTargets(listProjects(db), listMappings(db));
     if (targets.length === 0) {
       return [{ label: "尚未設定專案路徑或資料夾映射", enabled: false }];
     }
-    return targets.map((target) => ({ label: target.label, click: () => void launch(target.folder) }));
+    return targets.map((target) => ({ label: target.label, onClick: () => void launch(target.folder) }));
   };
 
   /** 快捷鍵：啟動「目前選定的專案」；沒選定（或它沒有本機路徑）就在游標位置跳出快速選單。 */
@@ -94,11 +94,14 @@ export const createLauncherRuntime = (deps: LauncherRuntimeDeps): LauncherRuntim
       void launch(project.localPath);
       return;
     }
-    Menu.buildFromTemplate(targetItems()).popup();
+    native().popupMenu(targetItems());
   };
 
   const shortcuts = createShortcutManager(
-    { register: (accelerator, callback) => globalShortcut.register(accelerator, callback), unregister: (accelerator) => globalShortcut.unregister(accelerator) },
+    {
+      register: (accelerator, callback) => native().shortcutRegister(accelerator, callback),
+      unregister: (accelerator) => native().shortcutUnregister(accelerator)
+    },
     onShortcut
   );
 
@@ -122,15 +125,14 @@ export const createLauncherRuntime = (deps: LauncherRuntimeDeps): LauncherRuntim
     }
 
     if (askFirst) {
-      const { response } = await dialog.showMessageBox({
-        type: "question",
+      const response = await native().confirm({
+        kind: "question",
         title: "devRun",
         message: "有程式要求在終端機開啟這個資料夾",
         detail: `${folder}\n\n這個資料夾沒有設定自動執行的指令，只會開啟一個空白的終端機。`,
         buttons: ["取消", "開啟"],
         defaultId: 0,
-        cancelId: 0,
-        noLink: true
+        cancelId: 0
       });
       if (response !== 1) {
         return;
@@ -151,22 +153,23 @@ export const createLauncherRuntime = (deps: LauncherRuntimeDeps): LauncherRuntim
 
   // 啟動時依儲存的設定註冊快捷鍵；被佔用就先不啟用，使用者可以在設定中換一組。
   const initial = readLauncherSettings(db).shortcut;
-  if (initial !== null && !shortcuts.apply(initial)) {
-    logger.log({ category: "system", level: "warn", message: `全域快捷鍵 ${initial} 已被其他程式使用，尚未啟用` });
+  if (initial !== null) {
+    void shortcuts.apply(initial).then((registered) => {
+      if (!registered) {
+        logger.log({ category: "system", level: "warn", message: `全域快捷鍵 ${initial} 已被其他程式使用，尚未啟用` });
+      }
+    });
   }
 
   deps.externalGate.attach((request) => void handleExternal(request));
 
-  // 協定只有打包後的 App 才有意義；開發時註冊的會是 Electron 本體。
-  if (app.isPackaged) {
-    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
-  }
+  native().registerUrlScheme(PROTOCOL_SCHEME);
 
   return {
     handlers,
-    dispose() {
-      shortcuts.dispose();
-      globalShortcut.unregisterAll();
+    async dispose() {
+      await shortcuts.dispose();
+      await native().shortcutUnregisterAll();
     }
   };
 };

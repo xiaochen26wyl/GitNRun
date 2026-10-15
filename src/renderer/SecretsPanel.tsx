@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  FIXED_SECRET_NAMES,
   SECRET_LABELS,
   maskedDisplay,
+  type FixedSecretName,
   type SecretStatus,
   type SecretTestResult,
   type SecretsOverview
 } from "@shared/secrets";
+
+/** 設定頁目前只開放 GitHub Token；其他固定金鑰（AI、Slack、SMTP）沒有對應功能頁，不顯示。 */
+const VISIBLE_SECRET_NAMES: readonly FixedSecretName[] = ["github.pat"];
 
 interface RowProps {
   status: SecretStatus;
@@ -123,7 +126,7 @@ export const SecretsPanel = () => {
         <p className="warn">此電腦無法使用系統金鑰保護，為了安全，所有金鑰都無法儲存。</p>
       )}
       <ul className="secret-list">
-        {FIXED_SECRET_NAMES.map((name) => {
+        {VISIBLE_SECRET_NAMES.map((name) => {
           const status = overview.secrets.find((entry) => entry.name === name);
           return status ? (
             <SecretRow

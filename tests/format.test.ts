@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { TIME_RANGES, errorMessage, formatRelative, rangeToFromMs, shortSha } from "@shared/format";
+import { TIME_RANGES, errorMessage, formatBytes, formatRelative, rangeToFromMs, shortSha } from "@shared/format";
 
 describe("formatRelative", () => {
   const now = 10_000_000;
@@ -43,5 +43,15 @@ describe("errorMessage", () => {
     assert.equal(errorMessage("text"), "text");
     assert.equal(errorMessage(undefined), "操作失敗");
     assert.equal(errorMessage(new Error("")), "操作失敗");
+  });
+});
+
+describe("formatBytes", () => {
+  it("shows at least 1 KB and switches to MB at 1024 KB", () => {
+    assert.equal(formatBytes(0), "1 KB");
+    assert.equal(formatBytes(1536), "2 KB");
+    assert.equal(formatBytes(1024 * 1023), "1023 KB");
+    assert.equal(formatBytes(1024 * 1024), "1.0 MB");
+    assert.equal(formatBytes(5.5 * 1024 * 1024), "5.5 MB");
   });
 });

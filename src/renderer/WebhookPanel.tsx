@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage, formatDateTime } from "@shared/format";
 import type { Project } from "@shared/projects";
+import { useProjectHead } from "./hooks";
 import { DEFAULT_WEBHOOK_PORT, WEBHOOK_HOST, type ProjectWebhookInfo, type WebhookSettings, type WebhookStatus } from "@shared/webhook";
 
 /**
@@ -14,6 +15,7 @@ export const WebhookPanel = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const headProps = useProjectHead();
 
   const refresh = useCallback(() => {
     void window.gitNRun.getWebhookStatus().then(setStatus);
@@ -91,7 +93,7 @@ export const WebhookPanel = () => {
       <ul className="project-list">
         {infos.map((info) => (
           <li key={info.projectId} className="project-row">
-            <div className="project-head">
+            <div {...headProps(projects.find((project) => project.id === info.projectId)?.localPath)}>
               <strong>{projectName(info.projectId)}</strong>
               <span className="muted">{info.lastReceivedAt ? `最近收到：${formatDateTime(info.lastReceivedAt)}` : "尚未收到過"}</span>
             </div>

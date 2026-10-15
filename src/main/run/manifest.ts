@@ -173,6 +173,7 @@ const inferFlutterManifest = async (folder: string, root: string, fs: ManifestFs
     return { status: "invalid", errors: [`讀不到 ${PUBSPEC_YAML}`] };
   }
 
+  // iOS 模擬器與 Android 模擬器拆成兩個獨立服務：電腦不一定撐得起兩個同時跑，由使用者各自啟動。
   const validation = validateManifest({
     version: 1,
     services: [
@@ -183,13 +184,15 @@ const inferFlutterManifest = async (folder: string, root: string, fs: ManifestFs
         command: ["flutter", "run", "-d", "chrome", "--web-port", "{port}"],
         port: true,
         env: {}
-      }
+      },
+      { name: "flutter-ios", role: "desktop", cwd: ".", command: ["flutter", "run", "-d", "iPhone"], port: false, env: {} },
+      { name: "flutter-android", role: "desktop", cwd: ".", command: ["flutter", "run", "-d", "emulator"], port: false, env: {} }
     ]
   });
   if (!validation.ok) {
     return { status: "invalid", errors: validation.errors };
   }
-  return { status: "ok", manifest: validation.manifest, hash: createHash("sha256").update(`flutter:${raw}`).digest("hex") };
+  return { status: "ok", manifest: validation.manifest, hash: createHash("sha256").update(`flutter-mobile:${raw}`).digest("hex") };
 };
 
 export const loadManifest = async (folder: string, fs: ManifestFs = nodeManifestFs): Promise<LoadedManifest> => {

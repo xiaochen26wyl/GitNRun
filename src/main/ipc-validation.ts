@@ -356,7 +356,13 @@ export const asRunAccountArgs = (args: readonly unknown[]): [string, string] | n
   return account === null ? null : [args[0], account];
 };
 
-export const asDocumentShortcutArgs = (args: readonly unknown[]): [DocumentShortcutInput] | null => {
+/** 專案根目錄：空字串代表關閉自動掃描；是否為存在的資料夾由處理器檢查。 */
+export const asDocumentRootArgs = (args: readonly unknown[]): [string] | null => {
+  const path = args.length === 1 ? asBoundedString(args[0], { allowEmpty: true }) : null;
+  return path === null ? null : [path.trim()];
+};
+
+export const asDocumentShortcutArgs =(args: readonly unknown[]): [DocumentShortcutInput] | null => {
   if (args.length !== 1 || !isPlainObject(args[0])) {
     return null;
   }
@@ -406,6 +412,33 @@ export const asClipboardArgs = (args: readonly unknown[]): [string] | null => {
   return text === null ? null : [text];
 };
 
+const EXTERNAL_LINK_HOST = "github.com";
+const EXTERNAL_LINK_PATH_PREFIX = "/settings/";
+
+/**
+ * 可由渲染層要求用系統瀏覽器開啟的網址：只收 https://github.com/settings/ 底下的頁面。
+ * 先交給 URL 解析再比對（../、反斜線、帳密、埠號等繞法都會在解析後現形），回傳正規化後的網址。
+ */
+export const asExternalUrl = (value: unknown): string | null => {
+  const text = asBoundedString(value, { max: 300 });
+  if (text === null) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== EXTERNAL_LINK_HOST || url.port !== "" || url.username !== "" || url.password !== "") {
+    return null;
+  }
+  return url.pathname.startsWith(EXTERNAL_LINK_PATH_PREFIX) ? url.href : null;
+};
+
+export const asExternalLinkArgs = (args: readonly unknown[]): [string] | null => {
+  const url = args.length === 1 ? asExternalUrl(args[0]) : null;
+  return url === null ? null : [url];
+};
+
 /** 預測衝突：專案 id，加上可選的比對分支名稱（是否為合法分支名稱由服務檢查）。 */
 export const asConflictArgs = (args: readonly unknown[]): [number, string | undefined] | null => {
   if (args.length === 0 || args.length > 2) return null;
@@ -419,7 +452,7 @@ export const asConflictArgs = (args: readonly unknown[]): [number, string | unde
 /** 一般設定：只確認形狀與允許的鍵，值的細部檢查與錯誤訊息由處理器負責。 */
 export const asAppSettingsArgs = (args: readonly unknown[]): [Record<string, unknown>] | null => {
   const raw = args[0];
-  if (args.length !== 1 || !isPlainObject(raw) || !hasOnlyKeys(raw, ["notificationsEnabled", "mutedProjectIds", "retentionDays", "openAtLogin"])) {
+  if (args.length !== 1 || !isPlainObject(raw) || !hasOnlyKeys(raw, ["retentionDays"])) {
     return null;
   }
   return [raw];

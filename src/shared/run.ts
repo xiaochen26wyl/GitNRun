@@ -14,8 +14,8 @@ export const RUN_MANIFEST_MAX_BYTES = 64 * 1024;
 export const RUN_ROLES = ["backend", "frontend", "desktop"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
-export const RUN_PROJECT_ACTIONS = ["stop"] as const;
-export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web", "hot-reload", "hot-restart"] as const;
+export const RUN_PROJECT_ACTIONS = ["stop", "readme"] as const;
+export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web"] as const;
 export type RunProjectActionName = (typeof RUN_PROJECT_ACTIONS)[number];
 export type RunServiceActionName = (typeof RUN_SERVICE_ACTIONS)[number];
 export type RunAction =
@@ -81,7 +81,7 @@ const FORBIDDEN_ENV = new Set([
 ]);
 
 export const isForbiddenEnvName = (name: string): boolean =>
-  FORBIDDEN_ENV.has(name) || name.startsWith("LD_") || name.startsWith("DYLD_");
+  FORBIDDEN_ENV.has(name) || name.startsWith("LD_") || name.startsWith("DYLD_") || name.startsWith("GITNRUN_SIDECAR_");
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -311,11 +311,6 @@ export const buildCommandLine = (command: readonly string[], env: Readonly<Recor
 export const describeCommand = (spec: Pick<RunServiceSpec, "command" | "env">): string =>
   [...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`), ...spec.command].join(" ");
 
-export const isFlutterRunCommand = (command: readonly string[]): boolean => {
-  const index = command.findIndex((part) => part === "flutter");
-  return index >= 0 && command[index + 1] === "run";
-};
-
 // ---------------------------------------------------------------------------
 // 啟動計畫
 // ---------------------------------------------------------------------------
@@ -435,8 +430,6 @@ export interface RunButtons {
   stop: RunButtonState;
   web: RunButtonState;
   desktop: RunButtonState;
-  hotReload: RunButtonState;
-  hotRestart: RunButtonState;
 }
 
 export interface RunServiceButtons {
@@ -444,8 +437,6 @@ export interface RunServiceButtons {
   restart: RunButtonState;
   stop: RunButtonState;
   web: RunButtonState;
-  hotReload: RunButtonState;
-  hotRestart: RunButtonState;
 }
 
 export interface RunServiceView {
@@ -454,9 +445,10 @@ export interface RunServiceView {
   port: number | null;
   url: string | null;
   state: RunServiceState;
-  hotReloadable: boolean;
   /** 唯讀顯示用的指令（佔位保持原樣）。 */
   command: string;
+  /** 偵測到的框架名稱（Django、Next.js…）；辨識不出來為 null，畫面退回角色標籤。 */
+  framework: string | null;
   buttons: RunServiceButtons;
 }
 
@@ -471,6 +463,8 @@ export interface RunTargetView {
   trusted: boolean;
   services: RunServiceView[];
   buttons: RunButtons;
+  /** 專案根目錄的 README.md 能不能開；找不到時 reason 說明原因。路徑留在主程序，不交給畫面。 */
+  readme: RunButtonState;
   /** dev 通關帳號；沒設定為空字串。帳號不是密鑰，可以完整交給畫面。 */
   account: string;
   /** dev 通關密碼的狀態（是否已設、末四碼）；明文永遠不離開主程序。 */
@@ -490,6 +484,7 @@ export type RunFailureReason =
   | "no-manifest"
   | "invalid-manifest"
   | "iterm-missing"
+  | "no-readme"
   | "permission-denied"
   | "denied"
   | "not-running"
@@ -505,7 +500,7 @@ const isActive = (state: RunServiceState): boolean => state !== "stopped";
 
 export interface ButtonInput {
   manifest: RunManifestStatus;
-  services: ReadonlyArray<Pick<RunServiceView, "role" | "state" | "hotReloadable"> & { hasPort: boolean; hasSession: boolean }>;
+  services: ReadonlyArray<Pick<RunServiceView, "role" | "state"> & { hasPort: boolean; hasSession: boolean }>;
   iterm: boolean;
 }
 
@@ -517,17 +512,13 @@ export const runButtonStates = (input: ButtonInput): RunButtons => {
       restart: disabled(reason),
       stop: disabled(reason),
       web: disabled(reason),
-      desktop: disabled(reason),
-      hotReload: disabled(reason),
-      hotRestart: disabled(reason)
+      desktop: disabled(reason)
     };
   }
 
   const serving = input.services.filter((service) => service.role === "backend" || service.role === "frontend");
   const frontends = input.services.filter((service) => service.role === "frontend");
   const desktops = input.services.filter((service) => service.role === "desktop");
-  const flutter = input.services.filter((service) => service.hotReloadable);
-  const activeFlutter = flutter.filter((service) => isActive(service.state) || service.hasSession);
 
   let all: RunButtonState;
   if (serving.length === 0) all = disabled("沒有後端或前端服務");
@@ -541,8 +532,8 @@ export const runButtonStates = (input: ButtonInput): RunButtons => {
   else if (!serving.some((service) => isActive(service.state))) restart = disabled("尚未啟動");
   else restart = enabled;
 
-  const active = input.services.filter((service) => isActive(service.state) && service.hasPort);
-  const stop = active.length > 0 ? enabled : disabled("尚未啟動");
+  const endable = input.services.filter((service) => (isActive(service.state) && service.hasPort) || service.hasSession);
+  const stop = endable.length > 0 ? enabled : disabled("尚未啟動");
 
   let web: RunButtonState;
   if (frontends.length === 0) web = disabled("沒有網頁前端");
@@ -555,19 +546,11 @@ export const runButtonStates = (input: ButtonInput): RunButtons => {
   else if (desktops.every((service) => service.hasPort && isActive(service.state))) desktop = disabled("桌面版已在執行中");
   else desktop = enabled;
 
-  let hotReload: RunButtonState;
-  if (flutter.length === 0) hotReload = disabled("沒有 Flutter run 服務");
-  else if (!input.iterm) hotReload = disabled("找不到 iTerm2");
-  else if (activeFlutter.length === 0) hotReload = disabled("Flutter 尚未啟動");
-  else hotReload = enabled;
-
-  const hotRestart = hotReload;
-
-  return { all, restart, stop, web, desktop, hotReload, hotRestart };
+  return { all, restart, stop, web, desktop };
 };
 
 export const runServiceButtonStates = (
-  service: Pick<RunServiceView, "role" | "state" | "hotReloadable"> & { hasPort: boolean; hasSession: boolean },
+  service: Pick<RunServiceView, "role" | "state"> & { hasPort: boolean; hasSession: boolean },
   iterm: boolean
 ): RunServiceButtons => {
   const active = isActive(service.state) || service.hasSession;
@@ -583,20 +566,116 @@ export const runServiceButtonStates = (
   else if (!active) restart = disabled("尚未啟動");
   else restart = enabled;
 
-  const stop = service.hasPort && isActive(service.state) ? enabled : disabled("尚未啟動");
+  const stop = (service.hasPort && isActive(service.state)) || service.hasSession ? enabled : disabled("尚未啟動");
 
   let web: RunButtonState;
   if (service.role !== "frontend") web = disabled("不是網頁前端");
   else if (service.state !== "running") web = disabled("前端尚未啟動");
   else web = enabled;
 
-  let hotReload: RunButtonState;
-  if (!service.hotReloadable) hotReload = disabled("不是 Flutter run 服務");
-  else if (!iterm) hotReload = disabled("找不到 iTerm2");
-  else if (!active) hotReload = disabled("Flutter 尚未啟動");
-  else hotReload = enabled;
+  return { start, restart, stop, web };
+};
 
-  return { start, restart, stop, web, hotReload, hotRestart: hotReload };
+// ---------------------------------------------------------------------------
+// 手機服務合併成一列
+// ---------------------------------------------------------------------------
+
+export type MobilePlatform = "ios" | "android";
+
+const MOBILE_SEGMENT = /^(ios|android)$/i;
+const MOBILE_FALLBACK_TITLE = "mobile";
+
+/**
+ * 以連字號分隔的名稱片段是 ios 或 android 就算手機服務（flutter-ios、android-dev）；iosapp 不算。
+ * app 是把平台片段拿掉後剩下的名稱：mobile-mahopurr-ios → mobile-mahopurr，只有平台名時為空字串。
+ */
+const mobileNameParts = (name: string): { platform: MobilePlatform; app: string } | null => {
+  const segments = name.split("-");
+  const index = segments.findIndex((segment) => MOBILE_SEGMENT.test(segment));
+  const platform = segments[index]?.toLowerCase();
+  if (platform !== "ios" && platform !== "android") return null;
+  return { platform, app: segments.filter((_, position) => position !== index).join("-") };
+};
+
+export const mobilePlatformOf = (name: string): MobilePlatform | null => mobileNameParts(name)?.platform ?? null;
+
+export const RUN_STATE_LABEL: Record<RunServiceState, string> = { running: "執行中", starting: "啟動中", stopped: "未啟動" };
+export const MOBILE_PLATFORM_LABEL: Record<MobilePlatform, string> = { ios: "iOS", android: "Android" };
+
+/**
+ * 手機合併列的整列狀態：任一平台執行中算執行中，否則任一平台啟動中算啟動中，其餘未啟動；
+ * 文字只列出不是停止的平台（iOS 執行中、Android 啟動中），全部停止就是「未啟動」。
+ */
+export const summarizeMobileState = (entries: ReadonlyArray<{ platform: MobilePlatform; state: RunServiceState }>): { state: RunServiceState; text: string } => {
+  const state: RunServiceState = entries.some((entry) => entry.state === "running") ? "running" : entries.some((entry) => entry.state === "starting") ? "starting" : "stopped";
+  const active = entries.filter((entry) => entry.state !== "stopped");
+  const text = active.length === 0 ? RUN_STATE_LABEL.stopped : active.map((entry) => `${MOBILE_PLATFORM_LABEL[entry.platform]} ${RUN_STATE_LABEL[entry.state]}`).join("、");
+  return { state, text };
+};
+
+const PURR_SEGMENT = /^(.+)purr$/i;
+
+/**
+ * 服務名稱只能小寫（它也是依賴與佔位的 key），畫面上改用駝峰顯示：
+ * 以連字號切段，凡是「某字加 purr」的片段在 purr 前切開並大寫 P（mahopurr → mahoPurr），其餘原樣。
+ */
+export const displayServiceName = (name: string): string =>
+  name
+    .split("-")
+    .map((segment) => {
+      const match = PURR_SEGMENT.exec(segment);
+      return match === null ? segment : `${match[1] ?? ""}Purr`;
+    })
+    .join("-");
+
+export type RunServiceRow<T> =
+  | { kind: "service"; service: T }
+  | { kind: "mobile"; title: string; services: Array<{ platform: MobilePlatform; service: T }> };
+
+/**
+ * 把服務清單整理成畫面上的列：一般服務各一列；手機服務依 app 名稱（去掉 ios／android 片段）分組，
+ * 每個 app 合併成一列（iOS 在前），標題就是 app 名稱，位置落在該 app 第一個服務原本的位置。
+ * 同一個 app 內同平台多出來的服務維持一般列，避免按鈕重名。
+ */
+export const groupRunServices = <T extends { name: string }>(services: readonly T[]): Array<RunServiceRow<T>> => {
+  const rows: Array<RunServiceRow<T>> = [];
+  const apps = new Map<string, Extract<RunServiceRow<T>, { kind: "mobile" }>>();
+  for (const service of services) {
+    const parts = mobileNameParts(service.name);
+    if (parts === null) {
+      rows.push({ kind: "service", service });
+      continue;
+    }
+    let row = apps.get(parts.app);
+    if (row === undefined) {
+      row = { kind: "mobile", title: parts.app === "" ? MOBILE_FALLBACK_TITLE : parts.app, services: [] };
+      apps.set(parts.app, row);
+      rows.push(row);
+    }
+    if (row.services.some((entry) => entry.platform === parts.platform)) {
+      rows.push({ kind: "service", service });
+      continue;
+    }
+    row.services.push({ platform: parts.platform, service });
+  }
+  for (const row of apps.values()) {
+    row.services.sort((a, b) => Number(a.platform === "android") - Number(b.platform === "android"));
+  }
+  return rows;
+};
+
+export interface MobileStopPlan {
+  label: string;
+  /** 依序結束的平台，iOS 在前。 */
+  platforms: MobilePlatform[];
+}
+
+/** 手機合併列共用的「結束」按鈕：依哪個平台能結束決定文字與要結束的平台；兩個都不能結束就不顯示（回傳 null）。 */
+export const planMobileStop = (stoppable: Readonly<Record<MobilePlatform, boolean>>): MobileStopPlan | null => {
+  if (stoppable.ios && stoppable.android) return { label: "結束全部", platforms: ["ios", "android"] };
+  if (stoppable.ios) return { label: "結束 iOS", platforms: ["ios"] };
+  if (stoppable.android) return { label: "結束 Android", platforms: ["android"] };
+  return null;
 };
 
 // ---------------------------------------------------------------------------

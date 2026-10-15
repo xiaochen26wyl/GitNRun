@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { createAppSettingsHandlers, type LoginItemApi } from "@main/app-settings";
+import { createAppSettingsHandlers } from "@main/app-settings";
 import { addProject } from "@main/db/projects-repo";
 import { listRules, createRule } from "@main/db/rules-repo";
 import { saveMapping, listMappings } from "@main/db/mappings-repo";
@@ -16,32 +16,35 @@ const root = mkdtempSync(join(tmpdir(), "gitnrun-settings-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 let counter = 0;
 
-const setup = (supported = true) => {
+const setup = () => {
   const db = createTestDb();
   const backupDir = join(root, `b${(counter += 1)}`);
-  const login = { enabled: false };
-  const loginItem: LoginItemApi = { supported, get: () => login.enabled, set: (value) => void (login.enabled = value) };
   const calls = { changed: 0, restored: 0 };
   let clock = 1_700_000_000_000;
   const handlers = createAppSettingsHandlers({
-    db, backupDir, loginItem, now: () => (clock += 1000),
+    db, backupDir, now: () => (clock += 1000),
     onConfigChanged: () => void (calls.changed += 1),
     onRestored: () => void (calls.restored += 1)
   });
-  return { db, handlers, calls, login, backupDir };
+  return { db, handlers, calls, backupDir };
 };
 
 describe("general settings", () => {
   it("start with sensible defaults", () => {
-    assert.deepEqual(setup().handlers.get(), { notificationsEnabled: true, mutedProjectIds: [], retentionDays: 30, openAtLogin: false, openAtLoginSupported: true });
+    assert.deepEqual(setup().handlers.get(), { retentionDays: 30 });
   });
 
   it("save and read back each setting, scheduling a backup", () => {
     const t = setup();
-    const saved = t.handlers.save({ notificationsEnabled: false, mutedProjectIds: [3, 3, 5], retentionDays: 90, openAtLogin: true });
-    assert.deepEqual(saved, { notificationsEnabled: false, mutedProjectIds: [3, 5], retentionDays: 90, openAtLogin: true, openAtLoginSupported: true });
-    assert.equal(t.login.enabled, true);
+    const saved = t.handlers.save({ retentionDays: 90 });
+    assert.deepEqual(saved, { retentionDays: 90 });
     assert.equal(t.calls.changed, 1);
+  });
+
+  it("reports data usage for the three retained categories", () => {
+    const usage = setup().handlers.dataUsage();
+    assert.deepEqual(Object.keys(usage).sort(), ["aiCalls", "databaseBytes", "events", "freeBytes", "logs"]);
+    assert.equal(usage.logs.count, 0);
   });
 
   it("'keep forever' is stored as null and the retention job then deletes nothing", () => {
@@ -55,24 +58,12 @@ describe("general settings", () => {
   it("rejects anything invalid and applies none of a bad batch", () => {
     const t = setup();
     for (const bad of [
-      { retentionDays: 0 }, { retentionDays: 4000 }, { retentionDays: 1.5 }, { retentionDays: "30" as never },
-      { mutedProjectIds: [0] }, { mutedProjectIds: ["1"] as never }, { mutedProjectIds: Array(501).fill(1) }, { mutedProjectIds: "x" as never },
-      { notificationsEnabled: "yes" as never }, { openAtLogin: "yes" as never }
+      { retentionDays: 0 }, { retentionDays: 4000 }, { retentionDays: 1.5 }, { retentionDays: "30" as never }
     ]) {
       assert.throws(() => t.handlers.save(bad), UserFacingError, JSON.stringify(bad));
     }
-    assert.throws(() => t.handlers.save({ notificationsEnabled: false, retentionDays: -3 }), UserFacingError);
-    assert.equal(t.handlers.get().notificationsEnabled, true, "the valid half of a bad request was not applied");
+    assert.equal(t.handlers.get().retentionDays, 30, "a rejected request was not applied");
     assert.equal(t.calls.changed, 0);
-  });
-
-  it("login item is refused in an unpackaged build and reports why", () => {
-    const t = setup(false);
-    assert.equal(t.handlers.get().openAtLoginSupported, false);
-    assert.equal(t.handlers.get().openAtLogin, false);
-    assert.throws(() => t.handlers.save({ openAtLogin: true }), (error) => error instanceof UserFacingError && error.message.includes("打包"));
-    assert.doesNotThrow(() => t.handlers.save({ openAtLogin: false }));
-    assert.equal(t.login.enabled, false);
   });
 });
 

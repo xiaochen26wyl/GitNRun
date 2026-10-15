@@ -2,8 +2,8 @@ import type { SecretTestResult } from "@shared/secrets";
 
 /**
  * GitHub token 的「測試連線」與權限評估。
- * 監視只需要讀取（Contents: Read、Metadata: Read）；本機 push 用的是使用者自己的 git 憑證，
- * 所以這把 token 不需要任何寫入權限，權限過寬時要明確警示。
+ * 監視推送讀 Contents、Git / GitHub 頁讀 issues，全部只需要讀取（Contents: Read、Issues: Read、Metadata: Read）；
+ * 本機 push 用的是使用者自己的 git 憑證，所以這把 token 不需要任何寫入權限，權限過寬時要明確警示。
  */
 
 export type GithubTokenKind = "fine-grained" | "classic" | "unknown";
@@ -24,7 +24,7 @@ export const assessGithubToken = (token: string, scopesHeader: string | null): T
   const warnings: string[] = [];
 
   if (token.startsWith("github_pat_")) {
-    warnings.push("GitHub 不會透過 API 揭露 fine-grained token 的細部權限，請確認只授予 Contents: Read 與 Metadata: Read。");
+    warnings.push("GitHub 不會透過 API 揭露 fine-grained token 的細部權限，請確認只授予 Contents: Read、Issues: Read 與 Metadata: Read。");
     return { kind: "fine-grained", scopes, warnings };
   }
 
@@ -36,7 +36,7 @@ export const assessGithubToken = (token: string, scopesHeader: string | null): T
   const broad = scopes.filter((scope) => WRITE_SCOPE.test(scope));
   if (broad.length > 0) {
     warnings.push(
-      `這是 classic token，且包含寫入／管理權限（${broad.join("、")}）。監視只需要讀取，建議改用 fine-grained token（僅 Contents: Read、Metadata: Read）。`
+      `這是 classic token，且包含寫入／管理權限（${broad.join("、")}）。監視只需要讀取，建議改用 fine-grained token（僅 Contents: Read、Issues: Read、Metadata: Read）。`
     );
   } else {
     warnings.push("這是 classic token；建議改用 fine-grained token 以縮小可存取的範圍。");

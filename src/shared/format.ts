@@ -11,6 +11,13 @@ const dateTime = new Intl.DateTimeFormat("zh-TW", {
 
 export const formatDateTime = (timestamp: number): string => dateTime.format(new Date(timestamp));
 
+/** 檔案大小：不足 1 KB 顯示 1 KB，1 MB 以上改用 MB。 */
+export const formatBytes = (bytes: number): string => {
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.max(1, Math.round(kb))} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+};
+
 export const formatTimeOfDay = (timestamp: number): string =>
   new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(timestamp));
 

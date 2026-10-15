@@ -15,14 +15,13 @@
 | 功能 | 使用者價值 | 目前狀態 | 重要限制 |
 |------|------------|----------|----------|
 | 推送監視 | 即時知道 GitHub repo 有哪些推送 | 已支援輪詢；Webhook 為選配 | 輪詢模式推送者以 head commit 作者推定；Webhook 才能取得確切推送者 |
-| 事件列表 | 快速查找推送、commit 與檔案變更 | 已支援篩選、搜尋、詳情與桌面通知 | 通知靜音目前以專案為單位 |
+| 事件列表 | 快速查找推送、commit 與檔案變更 | 已支援篩選、搜尋與詳情 | 新推送不再自動跳桌面通知；要通知請用規則的「系統通知」動作 |
 | 分支命名規則 | 讓開工分支與推送分支容易辨識 | 已支援範本與合規標示 | 預設範本為 `v{version}_{year}_{mmdd}` |
 | 規則引擎 | 依事件自動通知、呼叫外部服務或執行本機動作 | 已支援條件與多種動作 | 寫入型動作預設需確認；匯入規則預設停用且需要確認 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
-| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務 | 已支援個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、動態 port、停止與熱更新 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 devRun 配置的 port |
+| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依資料夾名稱分成 5 個分組頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 devRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要改分組得改程式 |
 | Dev 通關帳密 | 方便保存專案 dev/debug 登入資料 | 已支援專案層級帳號與加密密碼 | 帳密不進備份；換機或還原後需重新輸入 |
-| 文件空間 | 集中查看專案 README 與常用文件 | 已自動整理已加入專案的 README，也支援本機捷徑與多種開啟方式 | 手動捷徑只存在本機，不同步；自動 README 由專案路徑即時發現 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
 | 郵件通知 | 透過 email 推送事件或規則結果 | 動作類型保留 | 執行器尚未實作 |
 
@@ -42,7 +41,7 @@
 
 - 資料目錄：`~/Library/Application Support/GitNRun/`。
 - 主要資料庫：`data/gitnrun.db`，資料夾權限應為 0700，資料庫權限應為 0600。
-- 設定備份：`data/backups/`，保留最近 10 份；備份不包含金鑰與 dev 通關帳密。
+- 設定備份：`data/backups/`，每天本地時間 22:00 自動備份一次（錯過則下次啟動補做），也可手動「立即備份」；保留最近 10 份；備份不包含金鑰與 dev 通關帳密。
 - 金鑰包含 GitHub token、Anthropic/OpenAI key、Slack Webhook URL、Webhook 簽章 secret、規則敏感環境變數與 dev 密碼。
 - 金鑰由 Electron `safeStorage` 加密，密文存在 SQLite；系統無法加密時一律拒絕儲存，不退回明文。
 - UI 只顯示「已設定」與末四碼；存入後不提供讀回明文。
@@ -64,7 +63,9 @@
 
 ## 啟動描述檔與專案啟動規格
 
-專案啟動頁會列出已設定本機路徑的專案，並自動掃描 `/Users/zorawl/Documents/GitHub` 第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web 啟動方式。
+專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描 `/Users/zorawl/Documents/GitHub` 第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
+
+專案啟動拆成 5 個頂部分組頁籤：開源Free（Usage-Pulse）、SAAS（stockPaw、toBloom、xiaochenStudio）、創作者宇宙（MahoPurr-Catalyst、fictionPurr、translationService）、自己用（GitNRun、socialHub）、不知道什麼時候才完成（yumeAegis）。每個頁籤只列屬於該組的專案；歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。分組表與比對規則在 `src/shared/run-groups.ts`。
 
 `.gitnrun/run.json` 是進階覆寫設定，可進版控，用來明確描述服務啟動方式。
 
@@ -102,13 +103,15 @@
 - `role` 支援 `backend`、`frontend`、`desktop`。
 - 後端與前端服務必須 `port: true`。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案可推測成 Flutter web 服務，使用 `flutter run -d chrome --web-port {port}`，並標示可熱更新。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（`flutter run -d iPhone`）、`flutter-android`（`flutter run -d emulator`）。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
 - 「重新啟動」會停掉既有 port 上的服務，並用同一組 port 重新開啟。
 - 「停止」依目前記錄的 port 停止服務，成功後清掉該專案的執行狀態與 `.dev/ports.json` 內容。
 - 「開網頁」只在 frontend 已執行時開啟實際 `http://localhost:<port>`，不自動啟動服務。
 - 「開桌面」啟動 desktop 服務與它 `needs` 的服務。
-- 「熱更新 r」與「熱啟動 R」只針對由 GitNRun 啟動且可識別的 Flutter `flutter run` iTerm2 session 送出 `r` 或 `R`；不主動探查其他終端機，也不自動執行熱更新。
+- 「指令」按鈕點擊即把該服務顯示用的指令複製到剪貼簿（手機列為「iOS 指令」「Android 指令」各一顆），並展開指令浮層。
+- 專案名稱列（各分頁共用）文字 20px；色條底色與字色依 `src/shared/brand.ts` 的專案指定配色表，表裡沒有的專案取 README「主要配色」第一列色碼、文字白色；色碼清單見 README「品牌配色」。
+- 介面固定為白底綠色配色（不跟隨系統深色模式）：選取中的頁籤、按鈕、注意事項使用品牌綠；全視窗最小字級 14px，專案分組頁的 app 名稱 16px。
 - `command` 是程式與參數陣列，每一項單獨引用後送進 iTerm2，不經 shell 解析。
 - `cwd` 必須是專案內相對路徑，且不能透過符號連結跳出專案。
 - 支援佔位：`{port}`、`{url}`、`{服務名.port}`、`{服務名.url}`。

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
-import type { GitLiteOverview, GitLiteProject } from "@shared/git-lite";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { rankByChangedFiles, type GitLiteOverview, type GitLiteProject } from "@shared/git-lite";
 import { errorMessage, formatRelative } from "@shared/format";
+import { useProjectHead } from "./hooks";
 
 const REFRESH_MS = 30_000;
 
@@ -23,6 +24,8 @@ const GitSummary = ({ project }: { project: GitLiteProject }) => {
 export const GitHubView = ({ onOpenSettings }: { onOpenSettings: () => void }) => {
   const [overview, setOverview] = useState<GitLiteOverview | null>(null);
   const [error, setError] = useState("");
+  const headProps = useProjectHead();
+  const ranked = useMemo(() => rankByChangedFiles(overview?.projects ?? []), [overview]);
 
   const refresh = useCallback(() => {
     void window.gitNRun
@@ -46,7 +49,7 @@ export const GitHubView = ({ onOpenSettings }: { onOpenSettings: () => void }) =
     <section>
       <div className="run-hero">
         <h1>Git / GitHub</h1>
-        <p className="muted">輕量讀取本機 git 狀態與 GitHub open issues；不建立監視器、不寫入 repo。</p>
+        <p className="muted">輕量讀取本機 git 狀態與 GitHub open issues，依變更檔案數排名；不建立監視器、不寫入 repo。</p>
       </div>
 
       {overview && !overview.githubTokenConfigured ? (
@@ -59,13 +62,16 @@ export const GitHubView = ({ onOpenSettings }: { onOpenSettings: () => void }) =
       ) : null}
       {error ? <p className="warn">{error}</p> : null}
       {overview === null ? <p className="muted">載入中…</p> : null}
-      {overview && overview.projects.length === 0 ? <p className="muted">還沒有專案資料夾。先在「專案啟動」加入資料夾。</p> : null}
+      {overview && overview.projects.length === 0 ? <p className="muted">還沒有專案資料夾。先到「設定」填寫專案根目錄。</p> : null}
 
       <ul className="project-list">
-        {overview?.projects.map((project) => (
+        {ranked.map((project, index) => (
           <li key={project.id} className="project-row git-row">
-            <div className="project-head">
-              <strong>{project.label}</strong>
+            <div {...headProps(project.folder)}>
+              <strong>
+                {project.isGitRepo ? `#${index + 1} ` : ""}
+                {project.label}
+              </strong>
               <span className="muted mono breakable">{project.folder}</span>
             </div>
             <GitSummary project={project} />

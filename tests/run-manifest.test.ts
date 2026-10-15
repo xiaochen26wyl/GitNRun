@@ -6,17 +6,23 @@ import {
   buildCommandLine,
   countFreshPorts,
   describeCommand,
+  displayServiceName,
   expandPlaceholders,
+  groupRunServices,
   isRunTargetId,
+  mobilePlatformOf,
   parseRunTargetId,
+  planMobileStop,
   planStart,
   runButtonStates,
   selectServices,
   shellQuote,
+  summarizeMobileState,
   validateManifest,
   type RunManifest
 } from "@shared/run";
 import { loadManifest, type ManifestFs } from "@main/run/manifest";
+import { simulatorShutdownCommand } from "@main/run/runtime";
 import { hasTrustedBefore, isRunTrusted, trustRunManifest, addRunFolder, listRunFolders, removeRunFolder } from "@main/run/store";
 import { createTestDb } from "./helpers/db";
 
@@ -235,9 +241,9 @@ describe("selectServices and planStart", () => {
 });
 
 describe("runButtonStates", () => {
-  const web = { role: "frontend" as const, hasPort: true, hotReloadable: false, hasSession: false };
-  const api = { role: "backend" as const, hasPort: true, hotReloadable: false, hasSession: false };
-  const panel = { role: "desktop" as const, hasPort: true, hotReloadable: false, hasSession: false };
+  const web = { role: "frontend" as const, hasPort: true, hasSession: false };
+  const api = { role: "backend" as const, hasPort: true, hasSession: false };
+  const panel = { role: "desktop" as const, hasPort: true, hasSession: false };
 
   it("disables everything with a reason when there is no usable manifest", () => {
     const missing = runButtonStates({ manifest: "missing", services: [], iterm: true });
@@ -280,24 +286,6 @@ describe("runButtonStates", () => {
   it("never disables a desktop service that cannot be detected", () => {
     const states = runButtonStates({ manifest: "ok", services: [{ ...panel, hasPort: false, state: "stopped" }], iterm: true });
     assert.equal(states.desktop.enabled, true);
-  });
-
-  it("enables Flutter hot controls only after a Flutter run service starts", () => {
-    const stopped = runButtonStates({
-      manifest: "ok",
-      services: [{ ...web, state: "stopped", hotReloadable: true }],
-      iterm: true
-    });
-    assert.equal(stopped.hotReload.reason, "Flutter 尚未啟動");
-    assert.equal(stopped.hotRestart.reason, "Flutter 尚未啟動");
-
-    const running = runButtonStates({
-      manifest: "ok",
-      services: [{ ...web, state: "running", hotReloadable: true }],
-      iterm: true
-    });
-    assert.equal(running.hotReload.enabled, true);
-    assert.equal(running.hotRestart.enabled, true);
   });
 });
 
@@ -371,7 +359,7 @@ describe("loadManifest", () => {
     );
   });
 
-  it("infers a Flutter web service from pubspec.yaml when no package scripts exist", async () => {
+  it("infers a Flutter web service plus separate iOS and Android services from pubspec.yaml when no package scripts exist", async () => {
     const result = await loadManifest(
       "/work/app",
       fakeFs({
@@ -382,8 +370,15 @@ describe("loadManifest", () => {
     assert.equal(result.status, "ok");
     assert.deepEqual(
       result.status === "ok" ? result.manifest.services.map((item) => [item.name, item.role, item.command, item.port]) : [],
-      [["flutter", "frontend", ["flutter", "run", "-d", "chrome", "--web-port", "{port}"], true]]
+      [
+        ["flutter", "frontend", ["flutter", "run", "-d", "chrome", "--web-port", "{port}"], true],
+        ["flutter-ios", "desktop", ["flutter", "run", "-d", "iPhone"], false],
+        ["flutter-android", "desktop", ["flutter", "run", "-d", "emulator"], false]
+      ]
     );
+    // 一次只會啟動被點的那個服務，iOS 與 Android 不會一起被帶起來。
+    assert.deepEqual(result.status === "ok" ? selectServices(result.manifest, { service: "flutter-ios" }).map((item) => item.name) : [], ["flutter-ios"]);
+    assert.deepEqual(result.status === "ok" ? selectServices(result.manifest, { service: "flutter-android" }).map((item) => item.name) : [], ["flutter-android"]);
   });
 
   it("does not read a manifest from the retired folder name", async () => {
@@ -451,5 +446,132 @@ describe("run store", () => {
     assert.equal(removeRunFolder(db, first.id), true);
     assert.equal(removeRunFolder(db, first.id), false);
     assert.deepEqual(listRunFolders(db).map((entry) => entry.path), ["/work/b"]);
+  });
+});
+
+describe("mobile services share one row", () => {
+  const names = (rows: ReturnType<typeof groupRunServices<{ name: string }>>) =>
+    rows.map((row) => (row.kind === "service" ? row.service.name : `mobile:${row.services.map((item) => item.service.name).join("+")}`));
+  const titles = (rows: ReturnType<typeof groupRunServices<{ name: string }>>) => rows.flatMap((row) => (row.kind === "mobile" ? [row.title] : []));
+  const of = (...list: string[]) => list.map((name) => ({ name }));
+
+  it("recognises ios and android only as hyphen-separated name parts", () => {
+    assert.equal(mobilePlatformOf("flutter-ios"), "ios");
+    assert.equal(mobilePlatformOf("android-dev"), "android");
+    assert.equal(mobilePlatformOf("iOS"), "ios");
+    assert.equal(mobilePlatformOf("iosapp"), null);
+    assert.equal(mobilePlatformOf("api"), null);
+  });
+
+  it("keeps ordinary services in order, one row each", () => {
+    assert.deepEqual(names(groupRunServices(of("api", "web", "panel"))), ["api", "web", "panel"]);
+  });
+
+  it("merges iOS and Android into one row at the first mobile service, iOS first", () => {
+    const rows = groupRunServices(of("api", "flutter-android", "web", "flutter-ios"));
+    assert.deepEqual(names(rows), ["api", "mobile:flutter-ios+flutter-android", "web"]);
+  });
+
+  it("still makes one row when only one platform exists", () => {
+    assert.deepEqual(names(groupRunServices(of("api", "flutter-android"))), ["api", "mobile:flutter-android"]);
+  });
+
+  it("leaves a second service of the same app and platform as its own row", () => {
+    assert.deepEqual(names(groupRunServices(of("flutter-ios", "ios-flutter", "flutter-android"))), ["mobile:flutter-ios+flutter-android", "ios-flutter"]);
+  });
+
+  it("gives every app its own row titled with the app name, in the position of its first service", () => {
+    const rows = groupRunServices(of(
+      "api",
+      "mobile-anipurr-ios",
+      "mobile-fictionpurr-android",
+      "web",
+      "mobile-mahopurr-ios",
+      "mobile-anipurr-android",
+      "mobile-fictionpurr-ios",
+      "mobile-mahopurr-android"
+    ));
+    assert.deepEqual(names(rows), [
+      "api",
+      "mobile:mobile-anipurr-ios+mobile-anipurr-android",
+      "mobile:mobile-fictionpurr-ios+mobile-fictionpurr-android",
+      "web",
+      "mobile:mobile-mahopurr-ios+mobile-mahopurr-android"
+    ]);
+    assert.deepEqual(titles(rows), ["mobile-anipurr", "mobile-fictionpurr", "mobile-mahopurr"]);
+  });
+
+  it("titles a row with the app name wherever the platform part sits, and falls back to mobile", () => {
+    assert.deepEqual(titles(groupRunServices(of("ios-dev", "mobile-ios-shop", "flutter-ios"))), ["dev", "mobile-shop", "flutter"]);
+    assert.deepEqual(titles(groupRunServices(of("ios", "android"))), ["mobile"]);
+  });
+
+  it("keeps an app with a single platform as one row titled with the app name", () => {
+    const rows = groupRunServices(of("mobile-mahopurr-android"));
+    assert.deepEqual(names(rows), ["mobile:mobile-mahopurr-android"]);
+    assert.deepEqual(titles(rows), ["mobile-mahopurr"]);
+  });
+
+  it("shows one shared end button whose text and targets follow which platform can be ended", () => {
+    assert.deepEqual(planMobileStop({ ios: true, android: false }), { label: "結束 iOS", platforms: ["ios"] });
+    assert.deepEqual(planMobileStop({ ios: false, android: true }), { label: "結束 Android", platforms: ["android"] });
+    assert.deepEqual(planMobileStop({ ios: true, android: true }), { label: "結束全部", platforms: ["ios", "android"] });
+    assert.equal(planMobileStop({ ios: false, android: false }), null);
+  });
+
+  it("uses a fixed shutdown command per platform", () => {
+    const ios = simulatorShutdownCommand("ios");
+    const android = simulatorShutdownCommand("android");
+    assert.match(ios, /xcrun simctl shutdown booted/);
+    assert.match(android, /emu kill/);
+    assert.notEqual(ios, android);
+    assert.equal(simulatorShutdownCommand("ios"), ios);
+  });
+});
+
+describe("run service display", () => {
+  it("shows purr names in camel case and leaves everything else alone", () => {
+    for (const [name, shown] of [
+      ["mobile-mahopurr", "mobile-mahoPurr"],
+      ["web-sparkpurr", "web-sparkPurr"],
+      ["desktop-mahopurr", "desktop-mahoPurr"],
+      ["mobile-anipurr", "mobile-aniPurr"],
+      ["mobile-poppurr", "mobile-popPurr"]
+    ] as const) {
+      assert.equal(displayServiceName(name), shown);
+    }
+    for (const name of ["purr", "api", "web", "flutter-ios"]) {
+      assert.equal(displayServiceName(name), name);
+    }
+  });
+
+  it("does not change how mobile services are grouped", () => {
+    const rows = groupRunServices([{ name: "mobile-mahopurr-ios" }, { name: "mobile-mahopurr-android" }]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.kind === "mobile" ? rows[0].title : "", "mobile-mahopurr");
+  });
+
+  it("summarizes the state of a merged mobile row", () => {
+    assert.deepEqual(
+      summarizeMobileState([
+        { platform: "ios", state: "stopped" },
+        { platform: "android", state: "stopped" }
+      ]),
+      { state: "stopped", text: "未啟動" }
+    );
+    assert.deepEqual(
+      summarizeMobileState([
+        { platform: "ios", state: "running" },
+        { platform: "android", state: "stopped" }
+      ]),
+      { state: "running", text: "iOS 執行中" }
+    );
+    assert.deepEqual(
+      summarizeMobileState([
+        { platform: "ios", state: "running" },
+        { platform: "android", state: "starting" }
+      ]),
+      { state: "running", text: "iOS 執行中、Android 啟動中" }
+    );
   });
 });

@@ -15,7 +15,7 @@ import { UserFacingError } from "@main/errors";
 import type { ShortcutManager } from "@main/launcher/shortcut";
 import { readLauncherSettings, writeLauncherSettings } from "@main/launcher/settings";
 
-/** 一鍵啟動終端機的處理邏輯（與 Electron 無關，可直接測試）。 */
+/** 一鍵啟動終端機的處理邏輯（與外殼無關，可直接測試）。 */
 
 export interface LauncherHandlerDeps {
   db: Db;
@@ -39,7 +39,7 @@ export interface LauncherHandlers {
   launchFolder(folder: string): Promise<LaunchResult>;
   launchProject(projectId: number): Promise<LaunchResult>;
   getSettings(): LauncherSettings;
-  saveSettings(patch: LauncherSettingsPatch): LauncherSettings;
+  saveSettings(patch: LauncherSettingsPatch): Promise<LauncherSettings>;
   availability(): TerminalAvailability;
 }
 
@@ -91,7 +91,7 @@ export const createLauncherHandlers = (deps: LauncherHandlerDeps): LauncherHandl
 
     getSettings: currentSettings,
 
-    saveSettings(patch) {
+    async saveSettings(patch) {
       if (patch.defaultTerminal !== undefined && (patch.defaultTerminal === TERMINAL_APP_DEFAULT || !isValidTerminalChoice(patch.defaultTerminal))) {
         throw new UserFacingError("終端機名稱不正確");
       }
@@ -103,7 +103,7 @@ export const createLauncherHandlers = (deps: LauncherHandlerDeps): LauncherHandl
       }
 
       // 先試著註冊；被其他程式佔用就整個不存，保留原本能用的快捷鍵。
-      if (patch.shortcut !== undefined && !deps.shortcuts.apply(patch.shortcut)) {
+      if (patch.shortcut !== undefined && !(await deps.shortcuts.apply(patch.shortcut))) {
         throw new UserFacingError("這組快捷鍵已被其他程式使用，請換一組");
       }
       writeLauncherSettings(db, patch);

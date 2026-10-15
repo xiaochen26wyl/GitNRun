@@ -1,8 +1,8 @@
-import { clipboard } from "electron";
 import { IPC } from "@shared/ipc";
 import type { AiService } from "@main/ai/service";
 import { handleIpc } from "@main/ipc";
 import { asClipboardArgs, asConflictArgs, asIdArgs, asNoArgs, asRuleObjectArgs } from "@main/ipc-validation";
+import { native } from "@main/native/bridge";
 
 export const registerAiIpc = (ai: AiService): void => {
   handleIpc(IPC.aiSettingsGet, asNoArgs, () => ai.getSettings());
@@ -14,7 +14,5 @@ export const registerAiIpc = (ai: AiService): void => {
   handleIpc(IPC.aiSummarizeEvent, asIdArgs, (eventId) => ai.summarizeEvent(eventId));
   handleIpc(IPC.aiSuggestEvent, asIdArgs, (eventId) => ai.suggestForEvent(eventId));
   handleIpc(IPC.aiConflicts, asConflictArgs, (projectId, against) => ai.predictConflicts(projectId, against));
-  handleIpc(IPC.clipboardWrite, asClipboardArgs, (text) => {
-    clipboard.writeText(text);
-  });
+  handleIpc(IPC.clipboardWrite, asClipboardArgs, (text) => native().clipboardWrite(text));
 };

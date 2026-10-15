@@ -2,6 +2,7 @@ import { useState } from "react";
 import { OFFLINE_REASON_TEXT, type AiResult, type ConflictReport, type OutgoingPreview } from "@shared/ai";
 import { errorMessage } from "@shared/format";
 import type { Project } from "@shared/projects";
+import { useProjectHead } from "./hooks";
 
 const SOURCE_BADGE = { ai: "AI", cache: "AI（快取）", offline: "本機規則" } as const;
 
@@ -52,6 +53,7 @@ const PreviewView = ({ preview }: { preview: OutgoingPreview }) => (
 
 /** 針對專案尚未提交的變更：先預覽會送出什麼，再產生 commit 訊息。 */
 export const CommitMessagePanel = ({ project, onClose }: { project: Project; onClose: () => void }) => {
+  const headProps = useProjectHead();
   const [preview, setPreview] = useState<OutgoingPreview | null | undefined>(undefined);
   const [result, setResult] = useState<AiResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,7 +73,7 @@ export const CommitMessagePanel = ({ project, onClose }: { project: Project; onC
 
   return (
     <div className="subpanel">
-      <div className="project-head">
+      <div {...headProps(project.localPath)}>
         <strong>commit 訊息：{project.name}</strong>
         <button type="button" onClick={onClose}>
           關閉
@@ -104,6 +106,7 @@ export const CommitMessagePanel = ({ project, onClose }: { project: Project; onC
 
 /** 預測目前分支與 origin/<分支> 合併是否會衝突（本機 git 判斷，AI 只負責解釋）。 */
 export const ConflictPanel = ({ project, onClose }: { project: Project; onClose: () => void }) => {
+  const headProps = useProjectHead();
   const [against, setAgainst] = useState("");
   const [report, setReport] = useState<ConflictReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -124,7 +127,7 @@ export const ConflictPanel = ({ project, onClose }: { project: Project; onClose:
 
   return (
     <div className="subpanel">
-      <div className="project-head">
+      <div {...headProps(project.localPath)}>
         <strong>預測合併衝突：{project.name}</strong>
         <button type="button" onClick={onClose}>
           關閉

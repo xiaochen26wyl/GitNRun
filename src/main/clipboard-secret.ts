@@ -1,4 +1,4 @@
-import { clipboard } from "electron";
+import { native } from "@main/native/bridge";
 
 export const SECRET_CLIPBOARD_TTL_MS = 60_000;
 
@@ -7,10 +7,7 @@ export const SECRET_CLIPBOARD_TTL_MS = 60_000;
  * 只在剪貼簿裡「還是這個 secret」的時候才清，不會誤刪使用者後來複製的其他東西。
  */
 export const copySecretToClipboard = (secret: string): void => {
-  clipboard.writeText(secret);
-  setTimeout(() => {
-    if (clipboard.readText() === secret) {
-      clipboard.clear();
-    }
-  }, SECRET_CLIPBOARD_TTL_MS).unref();
+  void native()
+    .clipboardWriteExpiring(secret, SECRET_CLIPBOARD_TTL_MS)
+    .catch(() => undefined);
 };

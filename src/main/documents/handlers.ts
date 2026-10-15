@@ -1,4 +1,5 @@
-import { basename, normalize } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, normalize } from "node:path";
 import type { DocumentShortcut, DocumentShortcutInput, DocumentOpener } from "@shared/documents";
 import { MAX_DOCUMENT_SHORTCUTS, validateDocumentShortcutInput } from "@shared/documents";
 import type { Db } from "@main/db/database";
@@ -6,6 +7,13 @@ import { getSetting, setSetting } from "@main/db/settings-repo";
 import { UserFacingError } from "@main/errors";
 
 export const DOCUMENT_SHORTCUTS_KEY = "documents.shortcuts";
+export const DOCUMENT_ROOT_KEY = "documents.projectRoot";
+
+/** 專案根目錄；沒設定過用預設，存成空字串代表使用者關閉了自動掃描。 */
+export const readDocumentRoot = (db: Db): string => {
+  const stored = getSetting<unknown>(db, DOCUMENT_ROOT_KEY, null);
+  return typeof stored === "string" ? stored : join(homedir(), "Documents", "GitHub");
+};
 
 export interface DocumentHandlersDeps {
   db: Db;
@@ -21,6 +29,8 @@ export interface DocumentHandlers {
   save(input: DocumentShortcutInput): DocumentShortcut;
   remove(id: number): void;
   open(id: number): Promise<void>;
+  getRoot(): string;
+  setRoot(path: string): Promise<string>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -135,6 +145,24 @@ export const createDocumentHandlers = (deps: DocumentHandlersDeps): DocumentHand
       if (!result.ok) {
         throw new UserFacingError(result.message);
       }
+    },
+
+    getRoot: () => readDocumentRoot(db),
+
+    async setRoot(path) {
+      let root = "";
+      if (path !== "") {
+        if (!path.startsWith("/")) {
+          throw new UserFacingError("專案根目錄必須是絕對路徑");
+        }
+        root = normalize(path).replace(/\/+$/, "") || "/";
+        if ((await deps.inspect(root)) !== "dir") {
+          throw new UserFacingError("找不到這個資料夾");
+        }
+      }
+      setSetting(db, DOCUMENT_ROOT_KEY, root);
+      deps.onConfigChanged();
+      return root;
     }
   };
 };
