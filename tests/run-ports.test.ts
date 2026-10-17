@@ -4,7 +4,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { allocatePorts, probePort, writePortsFile } from "@main/run/ports";
+import { allocatePorts, probePort, readPortsFile, writePortsFile } from "@main/run/ports";
 
 const listen = (port: number, host: string): Promise<net.Server> =>
   new Promise((resolve, reject) => {
@@ -115,5 +115,36 @@ describe("writePortsFile", () => {
     await symlink(elsewhere, join(dir, ".dev"));
     assert.equal(await writePortsFile(dir, { api: { role: "backend", port: 1 } }, 0), false);
     await assert.rejects(readFile(join(elsewhere, "ports.json"), "utf8"));
+  });
+});
+
+describe("readPortsFile", () => {
+  it("reads back what writePortsFile wrote", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pw-ports-"));
+    await writePortsFile(dir, { api: { role: "backend", port: 4001 }, web: { role: "frontend", port: 4002 } }, 0);
+    assert.deepEqual(await readPortsFile(dir), { api: 4001, web: 4002 });
+  });
+
+  it("returns null when there is no ports.json yet", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pw-ports-"));
+    assert.equal(await readPortsFile(dir), null);
+  });
+
+  it("ignores malformed or tampered content instead of throwing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pw-ports-"));
+    await writePortsFile(dir, { api: { role: "backend", port: 1 } }, 0);
+    await writeFile(join(dir, ".dev", "ports.json"), "not json");
+    assert.equal(await readPortsFile(dir), null);
+
+    await writeFile(join(dir, ".dev", "ports.json"), JSON.stringify({ services: { api: { port: "not-a-number" }, web: { port: 99999 }, panel: { port: 4003 } } }));
+    assert.deepEqual(await readPortsFile(dir), { panel: 4003 });
+  });
+
+  it("refuses to read through a .dev symlink", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pw-ports-"));
+    const elsewhere = await mkdtemp(join(tmpdir(), "pw-elsewhere-"));
+    await writeFile(join(elsewhere, "ports.json"), JSON.stringify({ services: { api: { port: 4001 } } }));
+    await symlink(elsewhere, join(dir, ".dev"));
+    assert.equal(await readPortsFile(dir), null);
   });
 });

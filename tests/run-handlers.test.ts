@@ -88,7 +88,7 @@ const mobileManifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult } = {}) => {
+const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult; portsFiles?: Record<string, Record<string, number>> } = {}) => {
   const db = createTestDb();
   /** 有 package.json 的資料夾（絕對路徑）。 */
   const packageFiles = new Set((options.packages ?? []).map((dir) => `${dir}/package.json`));
@@ -161,6 +161,7 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
       written.push({ folder, services });
       return true;
     },
+    readPortsFile: async (folder) => options.portsFiles?.[folder] ?? null,
     discoverFolders: () => options.discovered ?? [],
     itermAvailable: () => state.iterm,
     inspect: async (path) => (path === "/work/file" || packageFiles.has(path) ? "file" : path.startsWith("/work/") ? "dir" : "missing"),
@@ -284,6 +285,70 @@ describe("run handlers: listing", () => {
       [overview.targets[2]?.id, "discovered", "/work/auto"]
     ]);
     assert.match(overview.targets[2]?.id ?? "", /^f:[1-9]\d{0,8}$/);
+  });
+
+  it("carries a project's pathExists onto its target, but not onto folder or discovered targets", async () => {
+    const h = harness({ discovered: [{ label: "auto", folder: "/work/auto" }] });
+    const missing = h.project("/definitely/not/a/real/path/xyz");
+    await h.handlers.addFolder("/work/extra");
+    const overview = await h.handlers.overview();
+    assert.deepEqual(
+      overview.targets.map((target) => [target.id, target.source, target.pathExists]),
+      [
+        [`p:${missing.id}`, "project", false],
+        ["f:1", "folder", undefined],
+        [overview.targets[2]?.id, "discovered", undefined]
+      ]
+    );
+  });
+
+  it("認回重開後仍在跑的服務：固定 port 直接探測，動態 port 配合上次寫的 ports.json", async () => {
+    const h = harness({ loaded: { status: "ok", manifest: fixedManifestOf(), hash: "a".repeat(64) } });
+    h.project("/work/app");
+    h.listening.add(5174); // api 的固定 port，實際還在監聽（GitNRun 重開前就啟動的）
+    h.listening.add(41777); // web 的動態 port，記錄在上次寫的 ports.json
+    // 還沒告訴它上次的 ports.json 內容，動態 port 的 web 仍應該是 stopped。
+    const overviewBefore = await h.handlers.overview();
+    assert.deepEqual(overviewBefore.targets[0]?.services.map((s) => [s.name, s.state, s.port]), [
+      ["api", "running", 5174],
+      ["web", "stopped", null]
+    ]);
+
+    const h2 = harness({
+      loaded: { status: "ok", manifest: fixedManifestOf(), hash: "a".repeat(64) },
+      portsFiles: { "/work/app": { web: 41777 } }
+    });
+    h2.project("/work/app");
+    h2.listening.add(5174);
+    h2.listening.add(41777);
+    const overview = await h2.handlers.overview();
+    assert.deepEqual(overview.targets[0]?.services.map((s) => [s.name, s.state, s.port]), [
+      ["api", "running", 5174],
+      ["web", "running", 41777]
+    ]);
+
+    // 服務之後真的掛了，下次刷新要正確回報 stopped，不是卡在認回時的狀態。
+    h2.listening.delete(5174);
+    h2.listening.delete(41777);
+    const overviewAfterDeath = await h2.handlers.overview();
+    assert.deepEqual(overviewAfterDeath.targets[0]?.services.map((s) => [s.name, s.state]), [
+      ["api", "stopped"],
+      ["web", "stopped"]
+    ]);
+  });
+
+  it("記錄在 ports.json 裡、但其實已經沒人監聽的 port 不會被誤認成還在跑", async () => {
+    const h = harness({
+      loaded: { status: "ok", manifest: fixedManifestOf(), hash: "a".repeat(64) },
+      portsFiles: { "/work/app": { web: 41778 } }
+    });
+    h.project("/work/app");
+    // 故意不讓 41778 和 5174 進入 listening：兩個都該被判定為 stopped。
+    const overview = await h.handlers.overview();
+    assert.deepEqual(overview.targets[0]?.services.map((s) => [s.name, s.state]), [
+      ["api", "stopped"],
+      ["web", "stopped"]
+    ]);
   });
 
   it("shows services as stopped with commands, and explains a missing manifest", async () => {

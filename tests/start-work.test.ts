@@ -14,6 +14,7 @@ const project = (overrides: Partial<Project> = {}): Project => ({
   owner: "acme",
   repo: "widgets",
   localPath: "/Users/me/widgets",
+  pathExists: true,
   defaultBranch: "main",
   branchFilter: ["*"],
   pollIntervalSec: 30,

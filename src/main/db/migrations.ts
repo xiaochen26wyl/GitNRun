@@ -1,9 +1,12 @@
+import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 
 export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /** SQL 做不到的資料回填；在同一筆交易內、ALTER 執行後才跑。 */
+  postMigrate?: (db: DatabaseSync) => void;
 }
 
 /**
@@ -205,10 +208,28 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX idx_webhook_deliveries_received ON webhook_deliveries (received_at);
 `;
 
+/**
+ * v4：專案本機路徑是否真的存在於磁碟。只在新增／編輯專案（localPath 有變動）時重新檢查，
+ * 不是每次顯示都重新掃；既有專案在這次 migration 當下批次回填一次正確值。
+ */
+const SCHEMA_V4 = `
+ALTER TABLE projects ADD COLUMN path_exists INTEGER NOT NULL DEFAULT 0;
+`;
+
+const backfillPathExists = (db: DatabaseSync): void => {
+  const rows = db.prepare("SELECT id, local_path FROM projects").all();
+  const update = db.prepare("UPDATE projects SET path_exists = ? WHERE id = ?");
+  for (const row of rows) {
+    const localPath = row.local_path === null ? null : String(row.local_path);
+    update.run(localPath !== null && existsSync(localPath) ? 1 : 0, Number(row.id));
+  }
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "initial schema", sql: SCHEMA_V1 },
   { version: 2, name: "rule self events", sql: SCHEMA_V2 },
-  { version: 3, name: "webhook deliveries", sql: SCHEMA_V3 }
+  { version: 3, name: "webhook deliveries", sql: SCHEMA_V3 },
+  { version: 4, name: "project path existence", sql: SCHEMA_V4, postMigrate: backfillPathExists }
 ];
 
 export const LATEST_SCHEMA_VERSION: number = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
@@ -249,6 +270,7 @@ export const migrate = (db: DatabaseSync, migrations: readonly Migration[] = MIG
     db.exec("BEGIN IMMEDIATE");
     try {
       db.exec(migration.sql);
+      migration.postMigrate?.(db);
       // PRAGMA 不能用參數綁定；版本號已驗證為安全整數。
       db.exec(`PRAGMA user_version = ${migration.version}`);
       db.exec("COMMIT");

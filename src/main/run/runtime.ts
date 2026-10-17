@@ -14,7 +14,7 @@ import { detectInstaller } from "@main/run/installer";
 import { loadManifest } from "@main/run/manifest";
 import { fsPasscodeSource } from "@main/run/passcode-source";
 import { createSystemPortSweep } from "@main/run/port-sweep";
-import { allocatePorts, probePort, writePortsFile } from "@main/run/ports";
+import { allocatePorts, probePort, readPortsFile, writePortsFile } from "@main/run/ports";
 import type { Vault } from "@main/vault/vault";
 
 /** 專案啟動：把外殼的對話框、瀏覽器、iTerm2 組進處理邏輯。 */
@@ -144,6 +144,7 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     probe: probePort,
     allocatePorts,
     writePortsFile,
+    readPortsFile,
     discoverFolders,
     itermAvailable: () => detectAvailability().iterm,
     inspect,

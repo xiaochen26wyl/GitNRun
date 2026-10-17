@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { openDatabase, MEMORY_DB } from "@main/db/database";
 import {
   LATEST_SCHEMA_VERSION,
+  MIGRATIONS,
   SchemaTooNewError,
   getSchemaVersion,
   migrate,
@@ -76,6 +77,30 @@ describe("migrate", () => {
   it("rejects non-sequential migration versions", () => {
     const db = openDatabase(MEMORY_DB);
     assert.throws(() => migrate(db, [{ version: 2, name: "skips v1", sql: "CREATE TABLE a (id INTEGER)" }]));
+  });
+
+  it("backfills path_exists for existing projects when migrating to v4", () => {
+    const db = openDatabase(MEMORY_DB);
+    migrate(db, MIGRATIONS.filter((m) => m.version <= 3));
+    db.prepare("INSERT INTO projects (name, owner, repo, local_path, created_at) VALUES ('a', 'o', 'a', ?, 0)").run(
+      process.cwd()
+    );
+    db.prepare("INSERT INTO projects (name, owner, repo, local_path, created_at) VALUES ('b', 'o', 'b', ?, 0)").run(
+      "/definitely/not/a/real/path/xyz"
+    );
+    db.prepare("INSERT INTO projects (name, owner, repo, local_path, created_at) VALUES ('c', 'o', 'c', NULL, 0)").run();
+
+    migrate(db);
+
+    const rows = db.prepare("SELECT repo, path_exists FROM projects ORDER BY repo").all();
+    assert.deepEqual(
+      rows.map((row) => [String(row.repo), Number(row.path_exists)]),
+      [
+        ["a", 1],
+        ["b", 0],
+        ["c", 0]
+      ]
+    );
   });
 });
 

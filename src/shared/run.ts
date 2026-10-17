@@ -490,6 +490,8 @@ export interface RunTargetView {
   label: string;
   folder: string;
   source: "project" | "folder" | "discovered";
+  /** 複製路徑時要不要警示：只有 source 為 "project" 才有值，取自專案上次新增／編輯時的檢查結果。 */
+  pathExists?: boolean;
   manifest: RunManifestStatus;
   errors: string[];
   /** 目前的描述檔內容是否已被你確認過。 */

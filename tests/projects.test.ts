@@ -142,4 +142,25 @@ describe("projects repo", () => {
   it("returns null when updating a project that does not exist", () => {
     assert.equal(updateProject(createTestDb(), 999, normalized()), null);
   });
+
+  it("checks whether localPath exists on disk when adding, and only rechecks on update if localPath changed", () => {
+    const db = createTestDb();
+    const missing = addProject(db, normalized({ localPath: "/definitely/not/a/real/path/xyz" }));
+    assert.equal(missing.pathExists, false);
+
+    const present = addProject(db, normalized({ owner: "acme2", localPath: process.cwd() }));
+    assert.equal(present.pathExists, true);
+
+    // localPath 不變，即使磁碟上的路徑之後消失，updateProject 也不會重新檢查。
+    const renamed = updateProject(db, present.id, normalized({ owner: "acme2", localPath: process.cwd(), name: "renamed" }));
+    assert.equal(renamed?.pathExists, true);
+
+    // localPath 真的改了才重新檢查。
+    const moved = updateProject(
+      db,
+      present.id,
+      normalized({ owner: "acme2", localPath: "/definitely/not/a/real/path/xyz" })
+    );
+    assert.equal(moved?.pathExists, false);
+  });
 });

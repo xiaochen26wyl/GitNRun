@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { NormalizedProjectInput, Project, ProjectMode } from "@shared/projects";
 import type { Db } from "@main/db/database";
 
@@ -19,12 +20,16 @@ const parseFilter = (value: unknown): string[] => {
   }
 };
 
+/** localPath 是否真的存在於磁碟；只在新增／編輯時檢查一次，結果存進 path_exists 欄位，不每次即時掃。 */
+const pathExistsFor = (localPath: string | null): boolean => localPath !== null && existsSync(localPath);
+
 const rowToProject = (row: Row): Project => ({
   id: Number(row.id),
   name: String(row.name),
   owner: String(row.owner),
   repo: String(row.repo),
   localPath: row.local_path === null ? null : String(row.local_path),
+  pathExists: Number(row.path_exists) === 1,
   defaultBranch: row.default_branch === null ? null : String(row.default_branch),
   branchFilter: parseFilter(row.branch_filter_json),
   pollIntervalSec: Number(row.poll_interval_sec),
@@ -46,8 +51,8 @@ export const addProject = (db: Db, input: NormalizedProjectInput, now: number = 
   try {
     const result = db
       .prepare(
-        `INSERT INTO projects (name, owner, repo, local_path, branch_filter_json, poll_interval_sec, mode, enabled, ai_enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (name, owner, repo, local_path, branch_filter_json, poll_interval_sec, mode, enabled, ai_enabled, path_exists, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -59,6 +64,7 @@ export const addProject = (db: Db, input: NormalizedProjectInput, now: number = 
         input.mode,
         input.enabled ? 1 : 0,
         input.aiEnabled ? 1 : 0,
+        pathExistsFor(input.localPath) ? 1 : 0,
         now
       );
     return getProject(db, Number(result.lastInsertRowid)) as Project;
@@ -79,8 +85,10 @@ export const updateProject = (db: Db, id: number, input: NormalizedProjectInput)
   if (!current) {
     return null;
   }
+  // localPath 沒變就沿用既有的 path_exists，不做多餘的磁碟 I/O；只有真的改了路徑才重新檢查。
+  const pathExists = input.localPath === current.localPath ? current.pathExists : pathExistsFor(input.localPath);
   db.prepare(
-    `UPDATE projects SET name = ?, local_path = ?, branch_filter_json = ?, poll_interval_sec = ?, mode = ?, enabled = ?, ai_enabled = ?
+    `UPDATE projects SET name = ?, local_path = ?, branch_filter_json = ?, poll_interval_sec = ?, mode = ?, enabled = ?, ai_enabled = ?, path_exists = ?
      WHERE id = ?`
   ).run(
     input.name,
@@ -90,6 +98,7 @@ export const updateProject = (db: Db, id: number, input: NormalizedProjectInput)
     input.mode,
     input.enabled ? 1 : 0,
     input.aiEnabled ? 1 : 0,
+    pathExists ? 1 : 0,
     id
   );
 

@@ -72,6 +72,8 @@ export interface RunHandlerDeps {
   probe: (port: number) => Promise<boolean>;
   allocatePorts: (count: number, excluded?: readonly number[]) => Promise<number[]>;
   writePortsFile: (folder: string, services: Record<string, PortsFileService>, now: number) => Promise<boolean>;
+  /** 讀回上次寫的 .dev/ports.json；GitNRun 重開後用來配合探測，認回還活著的服務。 */
+  readPortsFile: (folder: string) => Promise<Record<string, number> | null>;
   discoverFolders?: () => Array<{ label: string; folder: string }>;
   itermAvailable: () => boolean;
   inspect: (path: string) => Promise<"dir" | "file" | "missing">;
@@ -148,6 +150,7 @@ interface Target {
   label: string;
   folder: string;
   source: "project" | "folder" | "discovered";
+  pathExists?: boolean;
 }
 
 interface Session {
@@ -179,6 +182,8 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   const grace = deps.startingGraceMs ?? DEFAULT_STARTING_GRACE_MS;
   const portRelease = deps.portRelease ?? DEFAULT_PORT_RELEASE;
   const sessions = new Map<string, Session>();
+  /** 每個目標在這次 GitNRun 執行期間只嘗試認回一次，避免每次刷新畫面都重新讀檔、重新探測。 */
+  const reconciledTargets = new Set<string>();
 
   const targets = (): Target[] => {
     const seen = new Set<string>();
@@ -191,7 +196,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       seen.add(folder);
       const id = `p:${project.id}`;
       usedIds.add(id);
-      result.push({ id, label: project.name, folder, source: "project" });
+      result.push({ id, label: project.name, folder, source: "project", pathExists: project.pathExists });
     }
     for (const entry of listRunFolders(db)) {
       if (seen.has(entry.path)) continue;
@@ -263,6 +268,38 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return startedAt !== undefined && deps.now() - startedAt < grace ? { state: "starting", port } : { state: "stopped", port: null };
   };
 
+  /**
+   * GitNRun 重開後，記憶體裡的 session 是空的，即使專案的服務其實還在跑。
+   * 用上次寫的 .dev/ports.json（固定 port 的服務則直接用描述檔裡的號碼）配合即時探測，
+   * 把還活著的服務認回來；每個目標這次執行只試一次，認不到就當作真的沒在跑。
+   */
+  const reconcileSession = async (target: Target, manifest: RunManifest): Promise<Session | undefined> => {
+    const existing = sessions.get(target.id);
+    if (reconciledTargets.has(target.id)) {
+      return existing;
+    }
+    reconciledTargets.add(target.id);
+
+    const portSpecs = manifest.services.filter((spec) => spec.port);
+    if (portSpecs.length === 0) {
+      return existing;
+    }
+    const recorded = await deps.readPortsFile(target.folder);
+    const discovered: Record<string, number> = {};
+    for (const spec of portSpecs) {
+      const candidate = spec.fixedPort ?? recorded?.[spec.name];
+      if (candidate !== undefined && (await deps.probe(candidate))) {
+        discovered[spec.name] = candidate;
+      }
+    }
+    if (Object.keys(discovered).length === 0) {
+      return existing;
+    }
+    const next: Session = { ports: { ...existing?.ports, ...discovered }, startedAt: { ...existing?.startedAt } };
+    sessions.set(target.id, next);
+    return next;
+  };
+
   /** 要刪 node_modules 重裝的資料夾：專案根目錄，加上服務工作目錄裡有自己 package.json 的子資料夾。 */
   const installDirectories = async (target: Target, loaded: LoadedManifest): Promise<string[]> => {
     const candidates = [target.folder];
@@ -283,6 +320,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       label: target.label,
       folder: target.folder,
       source: target.source,
+      pathExists: target.pathExists,
       account: getRunAccount(db, target.id),
       legacyPasscode: deps.vault.getStatus(passcodeSecretName(target.id)),
       readme: deps.findReadme(target.folder) === null ? { enabled: false, reason: "找不到 README.md" } : { enabled: true, reason: null }
@@ -302,7 +340,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       };
     }
 
-    const session = sessions.get(target.id);
+    const session = await reconcileSession(target, loaded.manifest);
     const services: RunServiceView[] = await Promise.all(
       loaded.manifest.services.map(async (spec) => {
         const { state, port } = await serviceState(session, spec.name);

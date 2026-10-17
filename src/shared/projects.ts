@@ -13,6 +13,8 @@ export interface Project {
   owner: string;
   repo: string;
   localPath: string | null;
+  /** localPath 上次新增／編輯時，磁碟上是否真的存在這個路徑；null 代表沒有設定 localPath。 */
+  pathExists: boolean;
   defaultBranch: string | null;
   branchFilter: string[];
   pollIntervalSec: number;

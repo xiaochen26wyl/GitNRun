@@ -110,13 +110,11 @@ const CommandButton = ({ command, label = "指令" }: { command: string; label?:
 
   const onClick = (): void => {
     setOpen((value) => !value);
-    // 包一層 Promise：剪貼簿不可用時同步丟出的錯誤也會走到失敗分支。
-    void Promise.resolve()
-      .then(() => navigator.clipboard.writeText(command))
-      .then(
-        () => flash("copied"),
-        () => flash("failed")
-      );
+    // 渲染層的瀏覽器剪貼簿權限被 session lockdown 一律拒絕，改走主程序的 IPC 寫入剪貼簿。
+    void window.gitNRun.copyText(command).then(
+      () => flash("copied"),
+      () => flash("failed")
+    );
   };
 
   return (
@@ -129,8 +127,12 @@ const CommandButton = ({ command, label = "指令" }: { command: string; label?:
   );
 };
 
-/** 專案路徑不直接攤在卡片上，點一下複製即可；結果用按鈕文字短暫提示，不展開浮層。 */
-const PathCopyButton = ({ path }: { path: string }) => {
+/**
+ * 專案路徑不直接攤在卡片上，點一下複製即可；結果用按鈕文字短暫提示，不展開浮層。
+ * missing 為真時路徑在磁碟上已找不到（上次新增／編輯時檢查的結果），但仍允許複製——
+ * 可能就是要複製這個路徑去手動重建資料夾。
+ */
+const PathCopyButton = ({ path, missing }: { path: string; missing?: boolean }) => {
   const [copy, setCopy] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -143,19 +145,20 @@ const PathCopyButton = ({ path }: { path: string }) => {
   };
 
   const onClick = (): void => {
-    // 包一層 Promise：剪貼簿不可用時同步丟出的錯誤也會走到失敗分支。
-    void Promise.resolve()
-      .then(() => navigator.clipboard.writeText(path))
-      .then(
-        () => flash("copied"),
-        () => flash("failed")
-      );
+    // 渲染層的瀏覽器剪貼簿權限被 session lockdown 一律拒絕，改走主程序的 IPC 寫入剪貼簿。
+    void window.gitNRun.copyText(path).then(
+      () => flash("copied"),
+      () => flash("failed")
+    );
   };
 
   return (
-    <button type="button" className="ghost" onClick={onClick}>
-      {copy === "copied" ? "已複製" : copy === "failed" ? "複製失敗" : "複製路徑"}
-    </button>
+    <>
+      <button type="button" className="ghost" onClick={onClick}>
+        {copy === "copied" ? "已複製" : copy === "failed" ? "複製失敗" : "複製路徑"}
+      </button>
+      {missing ? <span className="warn-badge" title="此路徑目前在磁碟上找不到">路徑不存在</span> : null}
+    </>
   );
 };
 
@@ -443,7 +446,7 @@ const TargetRow = ({
         />
       </div>
       {changes}
-      <PathCopyButton path={target.folder} />
+      <PathCopyButton path={target.folder} missing={target.source === "project" && target.pathExists === false} />
       {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
     </div>
 

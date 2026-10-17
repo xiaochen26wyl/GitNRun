@@ -388,14 +388,15 @@ export const importConfig = (db: Db, raw: unknown, now: number = Date.now()): Im
 
     const upsertProject = db.prepare(
       `INSERT INTO projects (name, owner, repo, local_path, default_branch, branch_filter_json,
-         poll_interval_sec, mode, ai_enabled, enabled, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         poll_interval_sec, mode, ai_enabled, enabled, path_exists, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(owner, repo) DO UPDATE SET
          name = excluded.name, local_path = excluded.local_path, default_branch = excluded.default_branch,
          branch_filter_json = excluded.branch_filter_json, poll_interval_sec = excluded.poll_interval_sec,
-         mode = excluded.mode, ai_enabled = excluded.ai_enabled, enabled = excluded.enabled`
+         mode = excluded.mode, ai_enabled = excluded.ai_enabled, enabled = excluded.enabled, path_exists = excluded.path_exists`
     );
     for (const project of backup.projects) {
+      // path_exists 是磁碟實況，不是可攜設定；備份檔不存這個欄位，還原時用這台機器當下的磁碟狀態重新檢查。
       upsertProject.run(
         project.name,
         project.owner,
@@ -407,6 +408,7 @@ export const importConfig = (db: Db, raw: unknown, now: number = Date.now()): Im
         project.mode,
         project.aiEnabled ? 1 : 0,
         project.enabled ? 1 : 0,
+        project.localPath !== null && existsSync(project.localPath) ? 1 : 0,
         now
       );
     }

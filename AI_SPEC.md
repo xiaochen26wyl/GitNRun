@@ -20,7 +20,8 @@
 | 規則引擎 | 依事件自動通知、呼叫外部服務或執行本機動作 | 已支援條件與多種動作 | 寫入型動作預設需確認；匯入規則預設停用且需要確認 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
-| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依資料夾名稱分成 5 個分組頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要改分組得改程式 |
+| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依分組表分頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要換成自己的專案分組得改該檔；專案與 App 順序可在畫面手動調整（只存本機檢視偏好）；每個專案卡顯示 GitHub Issue 區塊 |
+| 釋放終端機 port | 一鍵結束在終端機手動開的 port | 設定頁「連接埠掃描」先列出將結束的程序，確認後才結束 | 只處理本人擁有、有控制終端機、且不是 GitNRun 自身上下層的監聽程序；無終端機的背景服務（資料庫、Docker、系統程序）一律不碰 |
 | Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（GitNRun 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
 | 郵件通知 | 透過 email 推送事件或規則結果 | 動作類型保留 | 執行器尚未實作 |
@@ -61,11 +62,44 @@
 - 沒有金鑰、專案未允許、額度用完或離線時，功能要自動改用本機規則並說明原因。
 - AI 請求需有頻率限制、每日上限、相同輸入本機快取，以及短時間多筆事件合併機制。
 
+## UI 設計思維
+
+本章寫的是「為什麼這樣設計」與「新增按鈕要遵守的規則」，不描述成品外觀。客製或新增畫面時請沿用這些原則。
+
+### 設計原則
+
+- **狀態先於動作**：按鈕可不可按由資料層統一算出（`src/shared/run.ts` 的 `runButtonStates`、`runServiceButtonStates`、`reinstallButtonState`），畫面只負責顯示。不可按時按鈕反灰，並用 `title` 說明原因（例如「尚未啟動」「找不到 iTerm2」），不讓使用者按了才報錯。
+- **只在有意義時出現**：「結束」「結束全部」只在真的有東西可結束時才顯示；反灰是「現在不行但可能行」，不顯示是「這裡不會有這個動作」。
+- **同一時間只做一件事**：任一動作進行中，其他動作按鈕一律禁用，避免重複觸發；批次動作（例如結束全部手機服務）前一步失敗仍繼續，最後合併成一則結果訊息。
+- **相關動作合併成一列**：同一個 App 的 iOS、Android 手機服務合併成一列，啟動各自獨立，結束共用一顆，依哪個平台在跑切換文字與對象。
+- **複製類動作即時回饋**：「指令」「複製路徑」「Debug 密碼」點下就複製，用按鈕文字短暫變成「已複製」或「複製失敗」回饋；指令另外展開浮層讓人看到複製了什麼；密碼明文不顯示在畫面上。
+- **風險動作先確認**：連接埠掃描先列出將結束的程序再確認；啟動描述檔第一次執行或內容變更後，用原生對話框列出所有指令，預設按鈕是「拒絕」。
+- **主次分明**：主要動作用實心按鈕（品牌綠），次要或可略過的動作用 `ghost` 樣式；二選一切換以實心表示目前模式。
+- **說明不佔版面**：較長的說明收進 `HelpTip`（ⓘ），滑過或聚焦顯示、點擊釘住、按 Esc 或點外部關閉。
+- **顏色與字級集中管理**：白底綠色、不跟隨系統深色模式；全視窗最小字級 14px；顏色與尺寸用 `src/renderer/styles.css` 開頭的 CSS 變數，不在元件內寫死色碼。
+- **檢視偏好留在本機**：排序、是否顯示 Issue 等純檢視偏好存 localStorage，不進資料庫與備份；讀寫失敗就退回預設值，畫面照常可用。
+
+### 專案啟動頁按鈕規則
+
+| 按鈕 | 出現條件 | 可按條件 | 點擊行為 |
+|------|----------|----------|----------|
+| 啟動／開桌面 | 每個服務一顆；desktop 角色顯示「開桌面」，手機服務顯示「啟動 iOS」「啟動 Android」 | 找得到 iTerm2，且服務尚未執行 | 在 iTerm2 開新分頁啟動，動態 port 於此刻配置 |
+| 重新啟動 | 每個服務一顆 | 找得到 iTerm2，且服務已啟動 | 先結束舊服務並等 port 釋放，再用同一組 port 重開；任一步失敗就不開新分頁 |
+| 結束 | 僅在該服務有可結束的 port 或啟動記錄時顯示 | 同左 | 依記錄的 port 結束監聽程序並關閉該分頁；手機列依在跑的平台決定對象 |
+| 開網頁 | 僅 frontend 角色 | 前端已在執行 | 開啟實際 `http://localhost:<port>`，不自動啟動服務 |
+| 指令 | 每個服務一顆（手機為「iOS 指令」「Android 指令」） | 永遠可按 | 複製顯示用指令並展開浮層 |
+| README | 專案名稱旁 | 專案根目錄有 `README.md` | 用 Cursor 開啟，找不到時反灰 |
+| 結束全部 | 專案層級，僅在該專案有任何可結束的服務時顯示 | 同左 | 結束該專案所有服務並清掉執行狀態與 `.dev/ports.json` |
+| 重裝依賴 | 專案層級 | 有 `package.json`、沒有服務在執行、找得到 iTerm2 | 刪除 `node_modules` 後以偵測到的套件管理員重裝 |
+| 複製路徑 | 專案層級 | 永遠可按 | 複製專案資料夾路徑，結果以按鈕文字短暫提示 |
+| Debug 密碼 | 專案層級 | 已綁定來源且環境檔讀得到該鍵 | 重新讀取環境檔並複製密碼；來源可在展開面板綁定、重選或解除 |
+| 調整順序 | 分組列表上方 | 有可排序的專案 | 進入手動排序編輯；Issue 排序模式下專案順序鎖定 |
+
 ## 啟動描述檔與專案啟動規格
 
-專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描 `/Users/zorawl/Documents/GitHub` 第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
+專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描設定頁指定的專案根目錄第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
 
-專案啟動拆成 5 個頂部分組頁籤：開源Free（Usage-Pulse）、SAAS（stockPaw、toBloom、xiaochenStudio）、創作者宇宙（fictionPurr、translationService、MahoPurr-Catalyst）、自己用（GitNRun、socialHub）、不知道什麼時候才完成（yumeAegis）。每個頁籤只列屬於該組的專案；歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。頁籤內的專案依分組表的資料夾順序排列，不受資料表或資料夾掃描順序影響；fictionPurr 卡片內的服務列另依開發優先順序排列（api、desktop-mahopurr、mobile-mahopurr、web-sparkpurr、mobile-fictionpurr、web-fictionpurr、mobile-anipurr、mobile-poppurr，同層級相鄰，未列到的服務接在最後），只影響畫面順序，不影響啟動順序。分組表、服務列順序表與比對規則都在 `src/shared/run-groups.ts`。
+專案啟動依分組表拆成頂部頁籤，每個頁籤只列屬於該組的專案。歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。頁籤內的專案依分組表的資料夾順序排列，不受資料表或資料夾掃描順序影響。專案內服務列另有一張順序表（key 為專案資料夾名稱，值為服務名稱；同層級、並排的服務相鄰），只影響畫面順序，不影響啟動順序。分組表、服務列順序表與比對規則都在 `src/shared/run-groups.ts`，使用者應依自己的專案改寫這個檔案。
 
 `.gitnrun/run.json` 是進階覆寫設定，可進版控，用來明確描述服務啟動方式。
 
@@ -105,14 +139,17 @@
 - 後端與前端服務必須 `port: true`。
 - 可選 `fixedPort: 1024～65535`；只能用於 `port: true`，同一描述檔不可重複。未指定者維持動態配置；固定 port 已被占用時拒絕啟動，不改用其他號碼，也不結束占用它的程序。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待固定的 `498D038D-9A95-4CB5-967C-B846B0E93DE8`，再執行 Flutter）、`flutter-android`（先啟動固定的 `Pixel_6_API_34_dev` AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 固定使用選定的 `iPhone 17 dev` UUID；Android 不再使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。兩個模擬器識別碼是寫死的常數（`src/main/run/manifest.ts` 的 `FLUTTER_IOS_DEVICE_ID`、`FLUTTER_ANDROID_AVD_ID`），預設值是作者自己的開發用模擬器，使用者必須換成自己的；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
 - 「重新啟動」先結束舊服務（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
+- 專案與 App 的手動排序：存在 renderer 的 localStorage（`gitnrun.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`gitnrun.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。
+- Issue 區塊：每個專案卡顯示該 repo 的 GitHub issues，預設只列前 5 筆（`ISSUE_PREVIEW_COUNT`），可展開；頁面可見時每 60 秒更新一次。哪些分組略過 Issue 區塊由 `src/shared/git-lite.ts` 的略過分組表決定（以分組 id 指定，跟著分組表走）。使用者可關閉 Issue 顯示（`gitnrun.run.showIssues`），關閉時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。沒有 GitHub remote、載入中、失敗（可重試）各有對應狀態。
+- Debug 密碼來源：專案設定可綁定專案環境檔裡的某個鍵，由 `src/main/run/passcode-source.ts` 讀取；只讀不寫、不保存，明文只在主程序經手，環境檔大小有上限（`MAX_PASSCODE_ENV_BYTES`）。
 - 「停止」依目前記錄的 port 停止服務，成功後清掉該專案的執行狀態與 `.dev/ports.json` 內容。
 - 「開網頁」只在 frontend 已執行時開啟實際 `http://localhost:<port>`，不自動啟動服務。
 - 「開桌面」啟動 desktop 服務與它 `needs` 的服務。
 - 「指令」按鈕點擊即把該服務顯示用的指令複製到剪貼簿（手機列為「iOS 指令」「Android 指令」各一顆），並展開指令浮層。
-- 專案名稱列（各分頁共用）文字 20px；色條底色與字色依 `src/shared/brand.ts` 的專案指定配色表，表裡沒有的專案取 README「主要配色」第一列色碼、文字白色；色碼清單見 README「品牌配色」。
+- 專案名稱列（各分頁共用）文字 20px；色條底色與字色依 `src/shared/brand.ts` 的專案指定配色表，表裡沒有的專案取 README「主要配色」第一列色碼、文字白色；色碼清單見 README「品牌配色」。使用者應在該表填入自己的專案。
 - 介面固定為白底綠色配色（不跟隨系統深色模式）：選取中的頁籤、按鈕、注意事項使用品牌綠；全視窗最小字級 14px，專案分組頁的 app 名稱 16px。
 - `command` 是程式與參數陣列，每一項單獨引用後送進 iTerm2，不經 shell 解析。
 - `cwd` 必須是專案內相對路徑，且不能透過符號連結跳出專案。
@@ -122,9 +159,15 @@
 - 字串長度、服務數量、環境變數數量與輸出記錄都需要有上限。
 - 第一次執行，以及內容變更後第一次執行，必須跳出原生對話框列出所有指令；預設按鈕是「拒絕」。
 - 確認過的內容雜湊只存在本機，不進備份；還原備份後需重新確認。
-- 動態 port 在按下啟動按鈕當下向作業系統取得，避開固定 port 與留給手動啟動的 5173、5174（`src/shared/reserved-ports.ts`），且同一批不得重複；GitNRun 自己的 dev server 也撇除這兩個號碼；固定 port 依描述檔配置。重新啟動時沿用原設定，停止後清除執行記錄。
+- 動態 port 在按下啟動按鈕當下向作業系統取得，避開固定 port 與留給手動啟動的 5173、5174（`MANUAL_START_PORTS`，`src/shared/reserved-ports.ts`），且同一批不得重複；GitNRun 自己的 dev server（`scripts/dev-port.ts`，讀環境變數 `PORT`，未指定從 5173 往後找）也撇除這兩個號碼；固定 port 依描述檔配置。重新啟動時沿用原設定，停止後清除執行記錄。
 - 實際網址顯示在專案列，也寫入該專案 `.dev/ports.json` 作為當次提示；它不是穩定設定檔，使用前仍要確認服務存活。
 - 停止功能以目前記錄的 port 查找並終止監聽行程；若服務沒有可偵測 port，可能需要使用者在 iTerm2 分頁中手動停止。
+
+## 連接埠掃描規格
+
+- 入口在設定頁；流程固定為「掃描 → 列出將結束的程序與 port → 使用者確認 → 結束」，未確認不動手。
+- 以 `lsof -iTCP -sTCP:LISTEN` 與 `ps` 解析；只納入同時符合「本人擁有、有控制終端機、不是 GitNRun 自己與其上下層程序」的程序。
+- 結束後回報已釋放與仍無法結束的程序；純函式與過濾規則在 `src/shared/port-sweep.ts`，執行在 `src/main/run/port-sweep.ts`。
 
 ## Webhook 規格
 

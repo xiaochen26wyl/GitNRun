@@ -1,4 +1,4 @@
-import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
 import { MANUAL_START_PORTS } from "@shared/reserved-ports";
@@ -109,5 +109,36 @@ export const writePortsFile = async (folder: string, services: Readonly<Record<s
     return true;
   } catch {
     return false;
+  }
+};
+
+/**
+ * 讀回上次寫入的「服務名稱 -> port」；GitNRun 重開（例如終端機 dev 模式重啟主程序）後，
+ * 記憶體裡的 session 會清空，靠這份檔案配合即時探測，把還活著的服務重新認回來。
+ * 檔案不存在、是 symlink、或格式不對都回傳 null，不影響啟動。
+ */
+export const readPortsFile = async (folder: string): Promise<Record<string, number> | null> => {
+  try {
+    const dir = join(folder, ".dev");
+    const dirStat = await lstat(dir).catch(() => null);
+    if (dirStat === null || dirStat.isSymbolicLink()) {
+      return null;
+    }
+    const raw = JSON.parse(await readFile(join(dir, "ports.json"), "utf8")) as unknown;
+    const services =
+      typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).services : null;
+    if (typeof services !== "object" || services === null) {
+      return null;
+    }
+    const result: Record<string, number> = {};
+    for (const [name, value] of Object.entries(services as Record<string, unknown>)) {
+      const port = typeof value === "object" && value !== null ? (value as Record<string, unknown>).port : undefined;
+      if (typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536) {
+        result[name] = port;
+      }
+    }
+    return result;
+  } catch {
+    return null;
   }
 };
