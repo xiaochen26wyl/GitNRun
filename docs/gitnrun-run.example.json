@@ -3,12 +3,13 @@
   "version": 1,
   "services": [
     {
-      "_comment": "backend：本機 API 服務。port=true 時 GitNRun 會配置 {port}，並可讓其他服務用 {api.url} 引用。",
+      "_comment": "backend：本機 API 服務。fixedPort 可指定固定 port；省略時 GitNRun 才會動態配置。其他服務可用 {api.url} 引用。",
       "name": "api",
       "role": "backend",
       "cwd": "apps/api",
       "command": ["pnpm", "dev"],
       "port": true,
+      "fixedPort": 5174,
       "env": {
         "PORT": "{port}",
         "FRONTEND_URL": "{web.url}"

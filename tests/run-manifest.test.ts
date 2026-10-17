@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   buildCommandLine,
@@ -21,7 +22,7 @@ import {
   validateManifest,
   type RunManifest
 } from "@shared/run";
-import { loadManifest, type ManifestFs } from "@main/run/manifest";
+import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
 import { simulatorShutdownCommand } from "@main/run/runtime";
 import { hasTrustedBefore, isRunTrusted, trustRunManifest, addRunFolder, listRunFolders, removeRunFolder } from "@main/run/store";
 import { createTestDb } from "./helpers/db";
@@ -92,6 +93,39 @@ describe("validateManifest", () => {
     expectErrors(manifestOf(service({ port: false })));
     expectErrors(manifestOf(service({ role: "frontend", port: undefined })));
     parsed(manifestOf(service({ role: "desktop", port: false })));
+  });
+
+  it("accepts fixed ports and rejects invalid, duplicate or portless values", () => {
+    assert.equal(parsed(manifestOf(service({ fixedPort: 5174 }))).services[0]?.fixedPort, 5174);
+    for (const fixedPort of [0, 80, 65536, 5174.5, "5174", null]) {
+      assert.ok(expectErrors(manifestOf(service({ fixedPort }))).some((error) => error.includes("fixedPort")));
+    }
+    expectErrors(manifestOf(service({ role: "desktop", port: false, fixedPort: 5174 })));
+    assert.ok(expectErrors(manifestOf(service({ fixedPort: 5174 }), service({ name: "edge", fixedPort: 5174 }))).some((error) => error.includes("重複")));
+  });
+
+  it("names every unknown key and hints at underscore comments", () => {
+    const top = expectErrors({ version: 1, services: [service()], _note: "說明", extra: 1 });
+    assert.ok(top.some((error) => error.includes("最上層") && error.includes("_note、extra") && error.includes("請刪除")));
+    const nested = expectErrors(manifestOf(service({ _comment: "說明", shell: true })));
+    assert.ok(nested.some((error) => error.includes("services[0]（api）") && error.includes("_comment、shell") && error.includes("請刪除")));
+  });
+
+  it("keeps the index label when the service name is not valid", () => {
+    const errors = expectErrors(manifestOf(service({ name: "Api", shell: true })));
+    assert.ok(errors.some((error) => error.startsWith("services[0]：有不認得的欄位 shell")));
+    assert.ok(errors.some((error) => error.startsWith("services[0].name")));
+  });
+
+  it("keeps the example file in step with the validator", () => {
+    const example = JSON.parse(readFileSync(join(process.cwd(), "docs/gitnrun-run.example.json"), "utf8")) as Record<string, unknown>;
+    const errors = expectErrors(example);
+    assert.ok(errors.length > 0);
+    assert.ok(errors.every((error) => /有不認得的欄位 _/.test(error)), JSON.stringify(errors));
+    const withoutUnderscore = (value: Record<string, unknown>): Record<string, unknown> =>
+      Object.fromEntries(Object.entries(value).filter(([key]) => !key.startsWith("_")));
+    const services = example.services as Array<Record<string, unknown>>;
+    parsed({ ...withoutUnderscore(example), services: services.map(withoutUnderscore) });
   });
 
   it("rejects duplicate names", () => {
@@ -227,6 +261,14 @@ describe("selectServices and planStart", () => {
     );
   });
 
+  it("combines a fixed API port with a dynamically allocated frontend port", () => {
+    const manifest = parsed(manifestOf(service({ fixedPort: 5174, env: { PORT: "{port}" } }), service({ name: "web", role: "frontend", env: { API: "{api.url}", PORT: "{port}" } })));
+    assert.equal(countFreshPorts(manifest, {}), 1);
+    const plan = planStart(manifest, "all", {}, new Set(), [41001]);
+    assert.deepEqual(plan.ports, { api: 5174, web: 41001 });
+    assert.equal(plan.starts[1]?.commandLine, "env API=http://localhost:5174 PORT=41001 pnpm dev");
+  });
+
   it("reuses ports of services that are already up and does not start them again", () => {
     const manifest = stack();
     assert.equal(countFreshPorts(manifest, { api: 4001 }), 1);
@@ -318,6 +360,16 @@ const fakeFs = (files: Record<string, string>, links: Record<string, string> = {
   }
 });
 
+describe("jsonErrorPosition", () => {
+  it("turns the line and column of a JSON.parse error into a Chinese position", () => {
+    assert.equal(jsonErrorPosition("Expected ',' or '}' after property value in JSON at position 49 (line 3 column 32)"), "第 3 行第 32 欄");
+  });
+
+  it("returns null when the message has no position, so callers keep the plain text", () => {
+    assert.equal(jsonErrorPosition("Unexpected end of JSON input"), null);
+  });
+});
+
 describe("loadManifest", () => {
   const file = "/work/app/.gitnrun/run.json";
   const good = JSON.stringify(manifestOf(service({ cwd: "api" })));
@@ -372,8 +424,8 @@ describe("loadManifest", () => {
       result.status === "ok" ? result.manifest.services.map((item) => [item.name, item.role, item.command, item.port]) : [],
       [
         ["flutter", "frontend", ["flutter", "run", "-d", "chrome", "--web-port", "{port}"], true],
-        ["flutter-ios", "desktop", ["flutter", "run", "-d", "iPhone"], false],
-        ["flutter-android", "desktop", ["flutter", "run", "-d", "emulator"], false]
+        ["flutter-ios", "desktop", ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT], false],
+        ["flutter-android", "desktop", ["zsh", "-lc", FLUTTER_ANDROID_RUN_SCRIPT], false]
       ]
     );
     // 一次只會啟動被點的那個服務，iOS 與 Android 不會一起被帶起來。
@@ -402,6 +454,13 @@ describe("loadManifest", () => {
     assert.equal((await loadManifest("/work/app", fakeFs({ [file]: "{nope" }, {}, dirs))).status, "invalid");
     assert.equal((await loadManifest("/work/app", fakeFs({ [file]: JSON.stringify({ version: 1, services: [] }) }, {}, dirs))).status, "invalid");
     assert.equal((await loadManifest("/work/app", fakeFs({ [file]: " ".repeat(70 * 1024) }, {}, dirs))).status, "invalid");
+  });
+
+  it("points at the line and column of broken run.json syntax", async () => {
+    const broken = '{\n  "version": 1,\n  "services": [ {"name": "api" "role": "backend"} ]\n}';
+    const result = await loadManifest("/work/app", fakeFs({ [file]: broken }, {}, ["/work/app", "/work/app/api"]));
+    assert.equal(result.status, "invalid");
+    assert.ok(result.status === "invalid" && result.errors[0]?.startsWith(".gitnrun/run.json 不是合法的 JSON（第 3 行第"));
   });
 
   it("rejects a manifest that is a link pointing outside the project", async () => {

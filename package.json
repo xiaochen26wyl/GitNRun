@@ -1,6 +1,6 @@
 {
-  "name": "devrun",
-  "productName": "devRun",
+  "name": "gitnrun",
+  "productName": "GitNRun",
   "version": "0.1.0",
   "description": "Local dev launcher for starting and restarting frontend/backend services.",
   "license": "Apache-2.0",
@@ -46,8 +46,8 @@
     "vite": "^6.4.4"
   },
   "build": {
-    "appId": "com.devrun.app",
-    "productName": "devRun",
+    "appId": "com.gitnrun.app",
+    "productName": "GitNRun",
     "asar": true,
     "npmRebuild": false,
     "directories": {
@@ -84,7 +84,7 @@
     },
     "protocols": [
       {
-        "name": "devRun",
+        "name": "GitNRun",
         "schemes": [
           "gitnrun"
         ]

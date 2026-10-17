@@ -87,7 +87,7 @@ describe("run page settings", () => {
     assert.equal(isSecretLikeSettingKey("run.folders"), false);
   });
 
-  it("keeps the dev accounts out of a backup like the passcodes, which live in the vault", () => {
+  it("keeps the dev accounts out of a backup, since GitNRun never stores the passcodes", () => {
     const db = createTestDb();
     setSetting(db, "run.accounts", { "p:1": "tester@example.com" });
     setSetting(db, "run.folders", [{ id: 1, path: "/Users/me/app" }]);
@@ -96,6 +96,18 @@ describe("run page settings", () => {
     assert.ok(!keys.includes("run.accounts"));
     assert.ok(keys.includes("run.folders"));
     assert.equal(isSecretLikeSettingKey("run.accounts"), true);
+  });
+
+  it("keeps the password sources (file and key names only) in a backup, and never a password", () => {
+    const db = createTestDb();
+    setSetting(db, "run.passcodeSources", { "p:1": { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" } });
+    setSetting(db, "run.passcodeMigrated", true);
+
+    const settings = exportConfig(db).settings;
+    assert.deepEqual(settings.find((setting) => setting.key === "run.passcodeSources")?.value, { "p:1": { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" } });
+    assert.ok(settings.some((setting) => setting.key === "run.passcodeMigrated"));
+    assert.equal(isSecretLikeSettingKey("run.passcodeSources"), false);
+    assert.equal(isSecretLikeSettingKey("run.passcodeMigrated"), false);
   });
 
   it("keeps document shortcuts in the local settings backup", () => {

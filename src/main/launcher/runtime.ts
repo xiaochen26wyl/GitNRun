@@ -127,7 +127,7 @@ export const createLauncherRuntime = (deps: LauncherRuntimeDeps): LauncherRuntim
     if (askFirst) {
       const response = await native().confirm({
         kind: "question",
-        title: "devRun",
+        title: "GitNRun",
         message: "有程式要求在終端機開啟這個資料夾",
         detail: `${folder}\n\n這個資料夾沒有設定自動執行的指令，只會開啟一個空白的終端機。`,
         buttons: ["取消", "開啟"],

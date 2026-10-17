@@ -54,6 +54,11 @@ const api: GitNRunApi = {
   removeRunFolder: (targetId) => ipcRenderer.invoke(IPC.runRemoveFolder, targetId),
   setRunAccount: (targetId, account) => ipcRenderer.invoke(IPC.runSetAccount, targetId, account),
   copyRunPasscode: (targetId) => ipcRenderer.invoke(IPC.runCopyPasscode, targetId),
+  bindRunPasscode: (targetId, binding) => ipcRenderer.invoke(IPC.runBindPasscode, targetId, binding),
+  unbindRunPasscode: (targetId) => ipcRenderer.invoke(IPC.runUnbindPasscode, targetId),
+  openRunPasscodeFile: (targetId) => ipcRenderer.invoke(IPC.runOpenPasscodeFile, targetId),
+  scanTerminalPorts: () => ipcRenderer.invoke(IPC.runScanPorts),
+  releaseTerminalPorts: () => ipcRenderer.invoke(IPC.runReleasePorts),
   listDocumentShortcuts: () => ipcRenderer.invoke(IPC.documentsList),
   saveDocumentShortcut: (input) => ipcRenderer.invoke(IPC.documentsSave, input),
   removeDocumentShortcut: (id) => ipcRenderer.invoke(IPC.documentsRemove, id),
@@ -61,7 +66,7 @@ const api: GitNRunApi = {
   getDocumentRoot: () => ipcRenderer.invoke(IPC.documentsGetRoot),
   setDocumentRoot: (path) => ipcRenderer.invoke(IPC.documentsSetRoot, path),
   getBrandColors: () => ipcRenderer.invoke(IPC.brandColors),
-  getGitLiteOverview: () => ipcRenderer.invoke(IPC.gitLiteOverview),
+  getGitLiteOverview: (options) => ipcRenderer.invoke(IPC.gitLiteOverview, ...(options === undefined ? [] : [options])),
   pathForFile: (file) => webUtils.getPathForFile(file as File),
   getAiSettings: () => ipcRenderer.invoke(IPC.aiSettingsGet),
   saveAiSettings: (settings) => ipcRenderer.invoke(IPC.aiSettingsSave, settings),
@@ -86,6 +91,8 @@ const api: GitNRunApi = {
   listBackups: () => ipcRenderer.invoke(IPC.backupsList),
   backupNow: () => ipcRenderer.invoke(IPC.backupsNow),
   restoreBackup: (name) => ipcRenderer.invoke(IPC.backupsRestore, name),
+  deleteBackup: (name) => ipcRenderer.invoke(IPC.backupsDelete, name),
+  deleteAllBackups: () => ipcRenderer.invoke(IPC.backupsDeleteAll),
   onMonitorChanged: (handler) => {
     // 不把 IPC 事件物件交給渲染層，只轉交資料。
     const listener = (_event: unknown, change: MonitorChange): void => handler(change);

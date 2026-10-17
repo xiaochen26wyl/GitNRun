@@ -10,6 +10,8 @@
   --accent-text: #ffffff;
   --warn: #c2410c;
   --ok: #15803d;
+  /* 頁籤列高度（單行頁籤）；固定在頂端時，其他 sticky 元素要用它避開。 */
+  --topbar-h: 55px;
 }
 
 * {
@@ -104,6 +106,10 @@ select {
   gap: 24px;
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
 }
 
 .brand {
@@ -120,9 +126,11 @@ select {
 
 .tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   gap: 4px;
   flex: 1;
+  min-width: 0;
 }
 
 .tabs button {
@@ -284,8 +292,8 @@ select {
   border: 1px solid var(--border);
   border-radius: 8px;
   position: sticky;
-  top: 20px;
-  max-height: calc(100vh - 100px);
+  top: calc(var(--topbar-h) + 20px);
+  max-height: calc(100vh - var(--topbar-h) - 100px);
   overflow: auto;
 }
 
@@ -372,13 +380,15 @@ select {
   font-size: 14px;
 }
 
-/* 專案名稱列的色條：底色與文字色由程式依專案指定配色帶入（--brand、--brand-fg），沒有指定時底色取該專案 README 的主色、文字白色。 */
+/* 專案名稱列的色條：底色與文字色由程式依專案指定配色帶入（--brand、--brand-fg），沒有指定時底色取該專案 README 的主色、文字白色。
+   --brand-border 只有白色等需要描邊的配色才有；用內陰影畫框，不影響版面尺寸。 */
 .project-head.branded {
   align-items: center;
   padding: 6px 10px;
   border-radius: 6px;
   background: var(--brand);
   color: var(--brand-fg);
+  box-shadow: inset 0 0 0 1px var(--brand-border, transparent);
 }
 
 .project-head.branded .muted {
@@ -389,7 +399,7 @@ select {
 .project-head.branded button,
 .project-head.branded .badge,
 .project-head.branded .warn-badge {
-  border-color: var(--border);
+  border-color: var(--brand-border, var(--border));
   background: var(--bg);
   color: CanvasText;
 }
@@ -552,11 +562,6 @@ select {
 .run-hero {
   margin-bottom: 16px;
 }
-.run-hero h1 {
-  margin: 0 0 6px;
-  font-size: 22px;
-  line-height: 1.25;
-}
 .run-hero p {
   margin: 0;
 }
@@ -691,6 +696,30 @@ select {
 .run-passcode-label {
   flex: 0 0 2.5em;
 }
+.run-password-actions {
+  /* 按鈕直接排進專案標題列；展開的面板用 100% 寬度換到下一行。 */
+  display: contents;
+}
+.run-password-form,
+.run-password-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.run-password-panel {
+  flex: 1 0 100%;
+  display: grid;
+  gap: 8px;
+  padding: 8px 0;
+}
+.run-password-status {
+  margin: 0;
+}
+.run-password-form input {
+  width: 180px;
+  max-width: 100%;
+}
 .status-dot {
   display: inline-block;
   width: 10px;
@@ -714,8 +743,21 @@ select {
   margin-top: 24px;
 }
 
-.settings-page h2 + h3 {
+/* 標題與 ⓘ 說明並排；上下距離由 .settings-heading 負責，標題本身不另加 margin。不沿用全域的 .section-head。 */
+.settings-page .settings-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 24px;
+}
+
+.settings-page h2 + .settings-heading {
   margin-top: 16px;
+}
+
+.settings-page .settings-heading h2,
+.settings-page .settings-heading h3 {
+  margin: 0;
 }
 
 .settings-page div.row-actions,
@@ -723,24 +765,342 @@ select {
   margin: 12px 0;
 }
 
-.settings-page .plain-list,
-.settings-page ul.steps,
-.settings-page ol.steps {
-  margin-top: 12px;
-}
-
 .settings-page .plain-list {
+  margin-top: 12px;
   gap: 8px;
-}
-
-.settings-page .retention-list {
-  gap: 14px;
-}
-
-.settings-page .retention-list p {
-  margin: 2px 0 0;
 }
 
 .settings-page .secret-controls {
   flex-wrap: wrap;
+}
+
+.settings-page .secret-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 說明提示（ⓘ）：滑過或用鍵盤聚焦顯示，點擊釘住。泡泡只用既有色票 token。 */
+.help-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.help-tip-trigger {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.help-tip-trigger:hover,
+.help-tip-trigger:focus-visible,
+.help-tip.pinned .help-tip-trigger {
+  opacity: 1;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.help-tip-bubble {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 4px 12px color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 14px;
+  font-weight: normal;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+}
+
+.help-tip-bubble p,
+.help-tip-bubble ul {
+  margin: 0 0 6px;
+}
+
+.help-tip-bubble ul {
+  padding-left: 18px;
+}
+
+.help-tip:hover .help-tip-bubble,
+.help-tip-trigger:focus-visible + .help-tip-bubble,
+.help-tip.pinned .help-tip-bubble {
+  display: block;
+}
+
+/* 專案啟動頁：頁籤頂端的摘要膠囊，與專案卡片下方的 GitHub issues 區塊。只用既有色票 token。 */
+.run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.run-chips:last-child {
+  margin-bottom: 0;
+}
+
+.run-chips .badge {
+  margin-left: 0;
+  padding: 0 8px;
+}
+
+.badge.issue-chip {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.ghost {
+  border-color: var(--border);
+  background: transparent;
+  color: inherit;
+}
+
+.issue-section {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.issue-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0 6px;
+}
+
+.issue-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.issue-title-row h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.issue-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.issue-count {
+  display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.issue-count.empty {
+  border-color: var(--border);
+  color: inherit;
+  opacity: 0.65;
+}
+
+.issue-repo,
+.issue-all {
+  color: inherit;
+  text-decoration: none;
+}
+
+.issue-repo {
+  opacity: 0.65;
+}
+
+.issue-repo:hover,
+.issue-all:hover,
+.issue-link:hover {
+  color: var(--accent);
+}
+
+.issue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.issue-item {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.issue-link {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.issue-number {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.issue-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.issue-note,
+.issue-state {
+  margin: 0;
+  padding: 6px 0 4px;
+}
+
+.issue-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.issue-section .notice {
+  margin: 4px 0 8px;
+}
+
+.issue-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+.issue-skeleton span {
+  display: block;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--soft);
+}
+
+.issue-skeleton span:nth-child(1) {
+  width: 72%;
+}
+
+.issue-skeleton span:nth-child(2) {
+  width: 38%;
+}
+
+.issue-skeleton span:nth-child(3) {
+  width: 56%;
+}
+
+/* 專案卡片標題下的變更檔案數；達 50 換警示色提醒推送。只用既有色票 token。 */
+.change-badge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 2px 0;
+}
+
+.change-badge.reached {
+  color: var(--warn);
+}
+
+/* 專案清單的「調整順序」：按鈕與 issues 開關並排；面板列出整個頁籤的專案，用 ▲▼ 移動，不必捲動長卡片。 */
+.run-list-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.project-list[hidden] {
+  display: none;
+}
+
+.run-order {
+  margin: 10px 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.run-order-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.run-order-head h2 {
+  margin-bottom: 4px;
+}
+
+.run-order-head p {
+  margin: 0;
+}
+
+.run-order-list,
+.run-order-apps {
+  display: grid;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-order-item {
+  border-top: 1px solid var(--border);
+}
+
+.run-order-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.run-order-apps {
+  margin: 0 0 8px 20px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+.run-order-apps .run-order-line {
+  padding: 4px 0;
+}
+
+.run-order-moves {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.run-order-moves button {
+  padding: 2px 8px;
+}
+
+/* 專案排序方式的二選一切換：目前模式是實心按鈕，另一個是 ghost。 */
+.run-sort-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
 }

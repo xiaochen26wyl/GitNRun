@@ -1,34 +1,63 @@
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { join } from "node:path";
+import { MANUAL_START_PORTS } from "@shared/reserved-ports";
 import { urlForPort, type RunRole } from "@shared/run";
 
 /**
  * port 的分配、偵測與記錄。
- * 不內建任何偏好號碼：向作業系統要空位；狀態用 TCP 連線探測（同時探 IPv4 與 IPv6）。
+ * 動態 port 向作業系統要空位；狀態用 TCP 連線探測（同時探 IPv4 與 IPv6）。
  */
 
-/** 一次向作業系統要 count 個彼此不同的空 port（同時占著再一起放掉，所以不會重複）。 */
-export const allocatePorts = async (count: number): Promise<number[]> => {
+export interface BoundPort {
+  server: net.Server;
+  port: number;
+}
+
+/** 向作業系統要一個目前沒人用的 port 並先占著，由呼叫端負責關閉。 */
+const bindFreePort = (): Promise<BoundPort> =>
+  new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen({ port: 0, host: "127.0.0.1", exclusive: true }, () => {
+      const address = server.address();
+      if (address !== null && typeof address === "object") {
+        resolve({ server, port: address.port });
+      } else {
+        server.close();
+        reject(new Error("無法取得空的 port"));
+      }
+    });
+  });
+
+/**
+ * 一次向作業系統要 count 個彼此不同的空 port（同時占著再一起放掉，所以不會重複）。
+ * 固定 port（excluded）與留給手動啟動的 5173、5174 一律不發出去。
+ */
+export const allocatePorts = async (
+  count: number,
+  excluded: readonly number[] = [],
+  bind: () => Promise<BoundPort> = bindFreePort
+): Promise<number[]> => {
   const servers: net.Server[] = [];
+  const blocked = new Set([...MANUAL_START_PORTS, ...excluded]);
   try {
-    const ports = await Promise.all(
-      Array.from({ length: count }, () =>
-        new Promise<number>((resolve, reject) => {
-          const server = net.createServer();
-          servers.push(server);
-          server.once("error", reject);
-          server.listen({ port: 0, host: "127.0.0.1", exclusive: true }, () => {
-            const address = server.address();
-            if (address !== null && typeof address === "object") {
-              resolve(address.port);
-            } else {
-              reject(new Error("無法取得空的 port"));
-            }
-          });
-        })
-      )
-    );
+    const ports: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      let assigned = false;
+      for (let attempt = 0; attempt < 128 && !assigned; attempt += 1) {
+        const { server, port } = await bind();
+        if (blocked.has(port)) {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+          continue;
+        }
+        servers.push(server);
+        blocked.add(port);
+        ports.push(port);
+        assigned = true;
+      }
+      if (!assigned) throw new Error("無法取得不與固定 port 衝突的空 port");
+    }
     return ports;
   } finally {
     await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));

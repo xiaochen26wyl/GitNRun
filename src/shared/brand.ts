@@ -105,22 +105,26 @@ export const lookupBrandColor = (colors: BrandColorMap, path: string | null | un
   return parent === null ? null : (colors[parent] ?? null);
 };
 
-/** 專案名稱列的底色與字色。 */
+/** 專案名稱列的底色與字色；border 是選填的外框色，白色色條要靠它在白底頁面上看出邊界。 */
 export interface HeadPalette {
   background: string;
   text: string;
+  border?: string;
 }
+
+/** 創作者宇宙三個專案共用：白底黑字加黑色細框，不用粉色。 */
+const CREATOR_HEAD: HeadPalette = { background: "#FFFFFF", text: "#000000", border: "#000000" };
 
 /**
  * 專案名稱列的指定配色，優先於 README 主色；key 是資料夾名稱（小寫）。
- * 色碼來源：toBloom 取自其 README 的 Canvas 畫布與 Ring Yellow 點綴黃；fictionPurr 系列共用
- * fictionPurr README 的 Secondary 次色，xiaochenStudio 用其 Primary 主色；Usage-Pulse 與 yumeAegis 由使用者指定色系。
+ * 色碼來源：toBloom 取自其 README 的 Canvas 畫布與 Ring Yellow 點綴黃；xiaochenStudio 用 fictionPurr README 的 Primary 主色；
+ * fictionPurr 系列、Usage-Pulse 與 yumeAegis 由使用者指定（fictionPurr 系列為白底黑字）。
  */
 const HEAD_PALETTES: Readonly<Record<string, HeadPalette>> = {
   tobloom: { background: "#000000", text: "#FFD93D" },
-  fictionpurr: { background: "#FB7185", text: HEAD_TEXT_DEFAULT },
-  "mahopurr-catalyst": { background: "#FB7185", text: HEAD_TEXT_DEFAULT },
-  translationservice: { background: "#FB7185", text: HEAD_TEXT_DEFAULT },
+  fictionpurr: CREATOR_HEAD,
+  "mahopurr-catalyst": CREATOR_HEAD,
+  translationservice: CREATOR_HEAD,
   xiaochenstudio: { background: "#0066CC", text: HEAD_TEXT_DEFAULT },
   "usage-pulse": { background: "#4C1D95", text: HEAD_TEXT_DEFAULT },
   yumeaegis: { background: "#EA580C", text: HEAD_TEXT_DEFAULT }
@@ -150,8 +154,15 @@ export interface ProjectHeadProps {
 /** `.project-head` 該用的 className 與樣式變數：先看專案指定配色，再看 README 主色（字色白）；都沒有就維持原本的樣子。 */
 export const projectHeadProps = (colors: BrandColorMap, path: string | null | undefined): ProjectHeadProps => {
   const readme = lookupBrandColor(colors, path);
-  const palette = lookupHeadPalette(path) ?? (readme === null ? null : { background: readme, text: HEAD_TEXT_DEFAULT });
+  const palette: HeadPalette | null = lookupHeadPalette(path) ?? (readme === null ? null : { background: readme, text: HEAD_TEXT_DEFAULT });
   return palette === null
     ? { className: "project-head" }
-    : { className: "project-head branded", style: { "--brand": palette.background, "--brand-fg": palette.text } };
+    : {
+        className: "project-head branded",
+        style: {
+          "--brand": palette.background,
+          "--brand-fg": palette.text,
+          ...(palette.border === undefined ? {} : { "--brand-border": palette.border })
+        }
+      };
 };

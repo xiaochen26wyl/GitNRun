@@ -1,7 +1,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { AppSettings, AppSettingsPatch, BackupFileInfo, DataUsage, RestoreSummary } from "@shared/app-settings";
-import { exportConfig, importConfig, listBackups, readBackupFile, writeBackup } from "@main/db/backup";
+import type { AppSettings, AppSettingsPatch, BackupOverview, DataUsage, RestoreSummary } from "@shared/app-settings";
+import { nextBackupAt } from "@main/backup-schedule";
+import { BACKUP_KEEP, deleteBackups, exportConfig, importConfig, listBackups, readBackupFile, writeBackup } from "@main/db/backup";
 import { readDataUsage } from "@main/db/data-usage";
 import type { Db } from "@main/db/database";
 import { MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from "@main/db/retention";
@@ -24,9 +25,11 @@ export interface AppSettingsHandlers {
   get(): AppSettings;
   save(patch: AppSettingsPatch): AppSettings;
   dataUsage(): DataUsage;
-  listBackups(): BackupFileInfo[];
+  listBackups(): BackupOverview;
   backupNow(): { written: boolean };
   restore(name: string): RestoreSummary;
+  deleteBackup(name: string): void;
+  deleteAllBackups(): { removed: number };
 }
 
 export const createAppSettingsHandlers = (deps: AppSettingsDeps): AppSettingsHandlers => {
@@ -69,10 +72,11 @@ export const createAppSettingsHandlers = (deps: AppSettingsDeps): AppSettingsHan
           }
         })()
       );
-      return listBackups(deps.backupDir).flatMap((name) => {
+      const files = listBackups(deps.backupDir).flatMap((name) => {
         const info = sizes.get(name);
         return info ? [{ name, createdAt: info.mtimeMs, bytes: info.size }] : [];
       });
+      return { files, nextAutoBackupAt: nextBackupAt(deps.now()), keep: BACKUP_KEEP };
     },
 
     backupNow() {
@@ -93,6 +97,26 @@ export const createAppSettingsHandlers = (deps: AppSettingsDeps): AppSettingsHan
       }
       deps.onRestored();
       return summary;
+    },
+
+    deleteBackup(name) {
+      // 與還原相同：只認備份資料夾裡、格式正確的檔名，不接受任意路徑。
+      if (!listBackups(deps.backupDir).includes(name)) {
+        throw new UserFacingError("找不到這份備份");
+      }
+      try {
+        deleteBackups(deps.backupDir, [name]);
+      } catch {
+        throw new UserFacingError("刪除備份失敗");
+      }
+    },
+
+    deleteAllBackups() {
+      try {
+        return { removed: deleteBackups(deps.backupDir, listBackups(deps.backupDir)).length };
+      } catch {
+        throw new UserFacingError("刪除備份失敗");
+      }
     }
   };
 };

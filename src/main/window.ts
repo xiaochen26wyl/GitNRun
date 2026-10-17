@@ -30,7 +30,7 @@ export const createMainWindow = (): BrowserWindow => {
     minWidth: 820,
     minHeight: 520,
     show: false,
-    title: "devRun",
+    title: "GitNRun",
     webPreferences: buildSecureWebPreferences(PRELOAD_PATH)
   });
 
@@ -45,7 +45,7 @@ export const createMainWindow = (): BrowserWindow => {
     if (reloadGuard.allowRestart()) {
       window.reload();
     } else {
-      dialog.showErrorBox("畫面一直當掉", "devRun 的畫面在短時間內當掉了好幾次，已停止自動重新載入。請從 Dock 重新開啟視窗。");
+      dialog.showErrorBox("畫面一直當掉", "GitNRun 的畫面在短時間內當掉了好幾次，已停止自動重新載入。請從 Dock 重新開啟視窗。");
     }
   });
 

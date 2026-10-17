@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { rankByChangedFiles, type GitLiteOverview, type GitLiteProject } from "@shared/git-lite";
+import { isIssueSkippedFolder, rankByChangedFiles, type GitLiteOverview, type GitLiteProject } from "@shared/git-lite";
 import { errorMessage, formatRelative } from "@shared/format";
 import { useProjectHead } from "./hooks";
 
@@ -94,7 +94,7 @@ export const GitHubView = ({ onOpenSettings }: { onOpenSettings: () => void }) =
                   </li>
                 ))}
               </ul>
-            ) : project.repo && !project.issueError ? (
+            ) : project.repo && !project.issueError && !isIssueSkippedFolder(project.folder) ? (
               <p className="muted">沒有 open issues。</p>
             ) : null}
           </li>

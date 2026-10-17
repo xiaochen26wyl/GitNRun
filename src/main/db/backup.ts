@@ -63,7 +63,7 @@ export interface ConfigBackup {
 
 // 設定 key 長得像密鑰的一律不進備份（也不從備份匯入）。
 // run.trusted 是「這台機器上你確認過的啟動指令」，換機或還原備份時必須重新確認，所以一併排除。
-// run.accounts 是 dev 通關帳號，與存在保險庫的密碼成對，密碼不進備份，帳號也不進。
+// run.accounts 是 dev 通關帳號，帳號也不進備份（Debug 密碼只在專案環境檔，GitNRun 不保存）。
 const SECRET_KEY_PATTERN = /secret|token|password|passwd|api[_.-]?key|credential|private|^run\.(?:trusted|accounts)/i;
 export const isSecretLikeSettingKey = (key: string): boolean => SECRET_KEY_PATTERN.test(key);
 
@@ -506,6 +506,19 @@ export const listBackups = (dir: string): string[] =>
         .sort()
         .reverse()
     : [];
+
+/** 只刪備份資料夾裡檔名符合本程式格式的檔案，其他檔案一律不碰；回傳實際刪掉的檔名。 */
+export const deleteBackups = (dir: string, names: readonly string[]): string[] => {
+  const present = new Set(listBackups(dir));
+  const removed: string[] = [];
+  for (const name of names) {
+    if (present.has(name)) {
+      unlinkSync(join(dir, name));
+      removed.push(name);
+    }
+  }
+  return removed;
+};
 
 // 鍵排序後序列化，比對時不受物件欄位順序影響。
 const comparable = (backup: ConfigBackup): string =>

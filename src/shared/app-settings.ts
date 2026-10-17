@@ -39,6 +39,15 @@ export interface BackupFileInfo {
   bytes: number;
 }
 
+/** 設定頁的備份區：備份檔清單，加上每日自動備份的排程資訊（由主程序算好再傳）。 */
+export interface BackupOverview {
+  files: BackupFileInfo[];
+  /** 下一次自動備份的時間（本地 22:00）。 */
+  nextAutoBackupAt: number;
+  /** 最多保留幾份，超過會自動刪掉最舊的。 */
+  keep: number;
+}
+
 export interface RestoreSummary {
   settings: number;
   projects: number;

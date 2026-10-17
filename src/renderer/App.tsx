@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import type { AppInfo } from "@shared/ipc";
 import { DEFAULT_RUN_GROUP_ID, RUN_GROUPS, RUN_OTHER_GROUP, runGroupById, type RunGroupId } from "@shared/run-groups";
-import { GeneralPanel, GithubTokenGuide } from "./GeneralPanel";
-import { GitHubView } from "./GitHubView";
+import { GeneralPanel } from "./GeneralPanel";
+import { PortSweepPanel } from "./PortSweepPanel";
 import { RunView } from "./RunView";
 import { SecretsPanel } from "./SecretsPanel";
 import logo from "./assets/logo.png";
 
-type Tab = RunGroupId | "github" | "settings";
+type Tab = RunGroupId | "settings";
 
 export const App = () => {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -30,7 +30,7 @@ export const App = () => {
       <header className="topbar">
         <div className="brand">
           <img className="brand-logo" src={logo} alt="" width={28} height={28} />
-          <strong>devRun</strong>
+          <strong>GitNRun</strong>
           {info ? <span className="muted">v{info.version}</span> : null}
         </div>
         <nav className="tabs" aria-label="主頁籤">
@@ -39,9 +39,6 @@ export const App = () => {
               {group.label}
             </button>
           ))}
-          <button type="button" className={tab === "github" ? "active" : ""} onClick={() => setTab("github")}>
-            Git / GitHub
-          </button>
           <button type="button" className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
             設定
           </button>
@@ -49,12 +46,11 @@ export const App = () => {
       </header>
 
       <main className="content">
-        {tab !== "github" && tab !== "settings" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} /> : null}
-        {tab === "github" ? <GitHubView onOpenSettings={() => setTab("settings")} /> : null}
+        {tab !== "settings" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} onOpenSettings={() => setTab("settings")} /> : null}
         {tab === "settings" ? (
           <div className="settings-page">
+            <PortSweepPanel />
             <GeneralPanel />
-            <GithubTokenGuide />
             <SecretsPanel />
           </div>
         ) : null}

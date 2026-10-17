@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
+import { basename, join, relative } from "node:path";
 import { normalizeFolderPath } from "@shared/launcher";
 import {
   MAX_ACCOUNT_LENGTH,
@@ -7,15 +7,22 @@ import {
   countFreshPorts,
   describeCommand,
   mobilePlatformOf,
+  normalizePasscodeBinding,
   normalizeRunAccount,
   parseRunTargetId,
+  passcodeProblem,
   passcodeSecretName,
   planStart,
+  reinstallButtonState,
+  reinstallCommand,
   runButtonStates,
   runServiceButtonStates,
   selectServices,
   urlForPort,
+  type InstallManager,
   type MobilePlatform,
+  type PasscodeBinding,
+  type PasscodeSourceView,
   type RunAction,
   type RunActionResult,
   type RunFailureReason,
@@ -27,18 +34,34 @@ import {
   type RunStartSelection,
   type RunTargetView
 } from "@shared/run";
+import type { PortSweepResult, PortSweepScan } from "@shared/port-sweep";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { Logger } from "@main/logger";
 import { AUTOMATION_DENIED, runSessionName, type ItermTab } from "@main/launcher/osascript";
 import { serviceDirectory, type LoadedManifest } from "@main/run/manifest";
+import { legacyPasscodeBinding, type PasscodeSourceReader } from "@main/run/passcode-source";
+import type { PortSweep } from "@main/run/port-sweep";
 import type { PortsFileService } from "@main/run/ports";
-import { addRunFolder, getRunAccount, hasTrustedBefore, isRunTrusted, listRunFolders, removeRunFolder, setRunAccount, trustRunManifest } from "@main/run/store";
-import { SecretMissingError, SecretUnreadableError, type Vault } from "@main/vault/vault";
+import {
+  addRunFolder,
+  getPasscodeBinding,
+  getRunAccount,
+  hasTrustedBefore,
+  isPasscodeMigrated,
+  isRunTrusted,
+  listRunFolders,
+  markPasscodeMigrated,
+  removeRunFolder,
+  setPasscodeBinding,
+  setRunAccount,
+  trustRunManifest
+} from "@main/run/store";
+import { secretHint, type Vault } from "@main/vault/vault";
 
 /**
- * 專案啟動：列出專案、決定 port、在 iTerm2 開分頁、開網頁，以及每個專案的 dev 通關帳號／密碼。
+ * 專案啟動：列出專案、決定 port、在 iTerm2 開分頁、開網頁，以及每個專案的 dev 通關帳號與 Debug 密碼來源。
  * 全部是確定性邏輯，不呼叫任何 AI 服務；系統互動（探測、開視窗、對話框、剪貼簿）都由外部注入。
  */
 
@@ -47,7 +70,7 @@ export interface RunHandlerDeps {
   logger: Pick<Logger, "log">;
   loadManifest: (folder: string) => Promise<LoadedManifest>;
   probe: (port: number) => Promise<boolean>;
-  allocatePorts: (count: number) => Promise<number[]>;
+  allocatePorts: (count: number, excluded?: readonly number[]) => Promise<number[]>;
   writePortsFile: (folder: string, services: Record<string, PortsFileService>, now: number) => Promise<boolean>;
   discoverFolders?: () => Array<{ label: string; folder: string }>;
   itermAvailable: () => boolean;
@@ -59,20 +82,30 @@ export interface RunHandlerDeps {
   closeSimulator: (platform: MobilePlatform) => Promise<{ code: number; stderr: string }>;
   /** 原生確認對話框；使用者按「允許」才回傳 true。 */
   confirmCommands: (request: ConfirmCommandsRequest) => Promise<boolean>;
+  /** 刪除 node_modules 前的原生確認對話框；使用者按「刪除並重裝」才回傳 true。 */
+  confirmReinstall: (request: ConfirmReinstallRequest) => Promise<boolean>;
+  /** 重裝依賴用哪個套件管理員；資料夾沒有自己的宣告或 lock 檔時沿用 inherited。 */
+  detectInstaller: (dir: string, inherited: InstallManager | null) => Promise<InstallManager>;
+  /** 列出與結束終端機手動開的 port；pid 由主程序掃描，不由畫面傳入。 */
+  portSweep: PortSweep;
   openUrl: (url: string) => Promise<void>;
   /** 猜服務用的框架（Django、Next.js…）；沒注入或辨識不出來都是 null，失敗不影響總覽。 */
   detectFramework?: (folder: string, spec: RunServiceSpec) => Promise<string | null>;
   /** 專案資料夾根目錄的 README.md 路徑；找不到回傳 null。 */
   findReadme: (folder: string) => string | null;
-  /** 用文件預設的編輯器開檔；路徑一律由 findReadme 算出，不接受畫面傳入。 */
+  /** 用文件預設的編輯器開檔；路徑一律由主程序算出（README 或綁定的環境檔），不接受畫面傳入。 */
   openDocument: (path: string) => Promise<{ ok: true } | { ok: false; message: string }>;
-  /** dev 通關密碼存在密鑰保險庫；這裡只會讀狀態、刪除、以及交給 copySecret。 */
-  vault: Pick<Vault, "isAvailable" | "getStatus" | "delete" | "useSecret">;
+  /** 舊版把 Debug 密碼存在密鑰保險庫；現在只剩讀狀態（提示）與刪除（清除）。 */
+  vault: Pick<Vault, "getStatus" | "delete">;
   /** 把密碼放進剪貼簿並在一段時間後清掉；明文只在呼叫期間經手。 */
-  copySecret: (secret: string) => void;
+  copySecret: (secret: string) => Promise<void>;
+  /** Debug 密碼來源：讀專案環境檔裡綁定的鍵、掃描候選、算出安全的檔案路徑。 */
+  passcodeSource: PasscodeSourceReader;
   now: () => number;
   /** 指令送出後多久還沒開始監聽，就當作沒啟動成功。 */
   startingGraceMs?: number;
+  /** 重新啟動時等舊服務釋放 port 的上限與探測間隔；測試用。 */
+  portRelease?: { timeoutMs: number; pollMs: number };
 }
 
 export interface ConfirmCommandsRequest {
@@ -83,6 +116,13 @@ export interface ConfirmCommandsRequest {
   lines: Array<{ service: string; command: string }>;
 }
 
+export interface ConfirmReinstallRequest {
+  label: string;
+  folder: string;
+  /** dir 是相對專案資料夾的路徑，專案根目錄為 "."。 */
+  items: Array<{ dir: string; command: string }>;
+}
+
 export interface RunHandlers {
   overview(): Promise<RunOverview>;
   run(targetId: string, action: RunAction): Promise<RunActionResult>;
@@ -90,7 +130,17 @@ export interface RunHandlers {
   removeFolder(targetId: string): void;
   /** 空字串 = 清除帳號。 */
   setAccount(targetId: string, account: string): void;
+  /** 複製綁定的環境檔裡的 Debug 密碼；來源不可用時說明原因，不退回任何舊值。 */
   copyPasscode(targetId: string): Promise<void>;
+  /** 指定 Debug 密碼讀哪個環境檔的哪個鍵；檔案可以還不存在。 */
+  bindPasscode(targetId: string, binding: PasscodeBinding): void;
+  unbindPasscode(targetId: string): void;
+  /** 用文件編輯器開綁定的環境檔，讓你自己改密碼。 */
+  openPasscodeFile(targetId: string): Promise<void>;
+  /** 列出終端機手動開的 port 與占用它的程序，不結束任何東西。 */
+  scanPorts(): Promise<PortSweepScan>;
+  /** 結束所有終端機手動開的 port 的程序，並清掉對應服務的啟動記錄。 */
+  releasePorts(): Promise<PortSweepResult>;
 }
 
 interface Target {
@@ -106,7 +156,9 @@ interface Session {
 }
 
 export const DEFAULT_STARTING_GRACE_MS = 90_000;
+export const DEFAULT_PORT_RELEASE = { timeoutMs: 5_000, pollMs: 150 } as const;
 const ERROR_TEXT_MAX = 300;
+const CANDIDATE_CACHE_MS = 30_000;
 const SIMULATOR_LABEL: Record<MobilePlatform, string> = { ios: "iOS", android: "Android" };
 
 const fail = (reason: RunFailureReason, message: string): RunActionResult => ({ ok: false, reason, message });
@@ -125,6 +177,7 @@ const discoveredId = (folder: string, used: Set<string>): string => {
 export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   const { db } = deps;
   const grace = deps.startingGraceMs ?? DEFAULT_STARTING_GRACE_MS;
+  const portRelease = deps.portRelease ?? DEFAULT_PORT_RELEASE;
   const sessions = new Map<string, Session>();
 
   const targets = (): Target[] => {
@@ -160,6 +213,43 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
 
   const findTarget = (id: string): Target | null => targets().find((target) => target.id === id) ?? null;
 
+  /** 候選掃描要讀好幾個檔案，畫面每幾秒就刷新一次，所以同一個目標短時間內沿用上次的結果。 */
+  const candidateCache = new Map<string, { at: number; list: PasscodeBinding[] }>();
+
+  /** Debug 密碼的來源與狀態；明文只在這裡經手，只留下狀態與末四碼。 */
+  const passcodeSourceOf = async (target: Target, scan: { frameworks: ReadonlyArray<string | null>; serviceDirs: readonly string[] }): Promise<PasscodeSourceView> => {
+    const binding = getPasscodeBinding(db, target.id);
+    if (binding !== null) {
+      const read = await deps.passcodeSource.read(target.folder, binding);
+      return { binding, state: read.state, hint: read.value === null ? "" : secretHint(read.value), candidates: [] };
+    }
+    const now = deps.now();
+    const cached = candidateCache.get(target.id);
+    if (cached !== undefined && now - cached.at < CANDIDATE_CACHE_MS) {
+      return { binding: null, state: "unbound", hint: "", candidates: cached.list };
+    }
+    const list = scan.frameworks.some((framework) => framework !== null) ? await deps.passcodeSource.scan(target.folder, scan).catch(() => []) : [];
+    candidateCache.set(target.id, { at: now, list });
+    return { binding: null, state: "unbound", hint: "", candidates: list };
+  };
+
+  /**
+   * 舊版只認 toBloom、stockpaw 兩個專案的環境檔。第一次載入時，把它們仍有原本的鍵的目標轉成正式綁定，之後不再依資料夾名稱判斷。
+   * 還沒有任何目標時先不標記完成，等有專案可遷移再做。
+   */
+  const migrateLegacyBindings = async (): Promise<void> => {
+    if (isPasscodeMigrated(db)) return;
+    const all = targets();
+    if (all.length === 0) return;
+    for (const target of all) {
+      const legacy = legacyPasscodeBinding(target.folder);
+      if (legacy === null || getPasscodeBinding(db, target.id) !== null) continue;
+      const read = await deps.passcodeSource.read(target.folder, legacy);
+      if (read.state === "ok" || read.state === "empty") setPasscodeBinding(db, target.id, legacy);
+    }
+    markPasscodeMigrated(db);
+  };
+
   /** 服務目前的狀態：有配置過 port 且正在監聽 = 執行中；剛送出指令還沒監聽 = 啟動中。 */
   const serviceState = async (session: Session | undefined, name: string): Promise<{ state: RunServiceState; port: number | null }> => {
     const port = session?.ports[name];
@@ -173,6 +263,19 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return startedAt !== undefined && deps.now() - startedAt < grace ? { state: "starting", port } : { state: "stopped", port: null };
   };
 
+  /** 要刪 node_modules 重裝的資料夾：專案根目錄，加上服務工作目錄裡有自己 package.json 的子資料夾。 */
+  const installDirectories = async (target: Target, loaded: LoadedManifest): Promise<string[]> => {
+    const candidates = [target.folder];
+    if (loaded.status === "ok") {
+      for (const spec of loaded.manifest.services) candidates.push(serviceDirectory(target.folder, spec.cwd));
+    }
+    const dirs: string[] = [];
+    for (const dir of candidates) {
+      if (!dirs.includes(dir) && (await deps.inspect(join(dir, "package.json"))) === "file") dirs.push(dir);
+    }
+    return dirs;
+  };
+
   const viewOf = async (target: Target, itermAvailable: boolean): Promise<RunTargetView> => {
     const loaded = await deps.loadManifest(target.folder);
     const base = {
@@ -181,7 +284,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       folder: target.folder,
       source: target.source,
       account: getRunAccount(db, target.id),
-      passcode: deps.vault.getStatus(passcodeSecretName(target.id)),
+      legacyPasscode: deps.vault.getStatus(passcodeSecretName(target.id)),
       readme: deps.findReadme(target.folder) === null ? { enabled: false, reason: "找不到 README.md" } : { enabled: true, reason: null }
     };
     if (loaded.status !== "ok") {
@@ -189,11 +292,13 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       const errors = loaded.status === "invalid" ? loaded.errors : [];
       return {
         ...base,
+        passcodeSource: await passcodeSourceOf(target, { frameworks: [], serviceDirs: [] }),
         manifest,
         errors,
         trusted: false,
         services: [],
-        buttons: runButtonStates({ manifest, services: [], iterm: itermAvailable })
+        buttons: runButtonStates({ manifest, services: [], iterm: itermAvailable }),
+        reinstall: reinstallButtonState({ hasPackage: (await installDirectories(target, loaded)).length > 0, busy: false, iterm: itermAvailable })
       };
     }
 
@@ -211,6 +316,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           name: spec.name,
           role: spec.role,
           port,
+          fixedPort: spec.fixedPort ?? null,
           url: port === null ? null : urlForPort(port),
           state,
           command: describeCommand(spec),
@@ -219,8 +325,13 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         };
       })
     );
+    const passcodeSource = await passcodeSourceOf(target, {
+      frameworks: services.map((service) => service.framework),
+      serviceDirs: loaded.manifest.services.map((spec) => serviceDirectory(target.folder, spec.cwd))
+    });
     return {
       ...base,
+      passcodeSource,
       manifest: "ok",
       errors: [],
       trusted: isRunTrusted(db, target.folder, loaded.hash),
@@ -234,11 +345,17 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           hasSession: loaded.manifest.services[index]?.port !== true && session?.startedAt[service.name] !== undefined
         })),
         iterm: itermAvailable
+      }),
+      reinstall: reinstallButtonState({
+        hasPackage: (await installDirectories(target, loaded)).length > 0,
+        // 與「結束全部」可按的條件一致：有服務在跑，或沒有 port 的服務已送出啟動。
+        busy: services.some((service, index) => service.state !== "stopped" || (loaded.manifest.services[index]?.port !== true && session?.startedAt[service.name] !== undefined)),
+        iterm: itermAvailable
       })
     };
   };
 
-  const log = (level: "info" | "warn", message: string, detail?: unknown): void =>
+  const log =(level: "info" | "warn", message: string, detail?: unknown): void =>
     deps.logger.log({ category: "command", level, message, ...(detail === undefined ? {} : { detail }) });
 
   const openWeb = async (target: Target, manifest: RunManifest, serviceName?: string): Promise<RunActionResult> => {
@@ -276,8 +393,21 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { ok: true, message: "已開啟 README.md" };
   };
 
-  const stopListeningCommand = (port: number): string =>
-    `kill -TERM $(lsof -ti tcp:${port}) 2>/dev/null || true; sleep 0.5;`;
+  /** 結束 port 上的程序只送出終止訊號，程序可能還在收尾；等到沒人監聽才回傳 null，超過上限回傳仍被占用的 port。 */
+  const waitForPortsFree = async (ports: readonly number[]): Promise<number | null> => {
+    const attempts = Math.ceil(portRelease.timeoutMs / portRelease.pollMs);
+    for (let attempt = 0; ; attempt += 1) {
+      let busy: number | null = null;
+      for (const port of ports) {
+        if (await deps.probe(port)) {
+          busy = port;
+          break;
+        }
+      }
+      if (busy === null || attempt >= attempts) return busy;
+      await new Promise<void>((resolve) => setTimeout(resolve, portRelease.pollMs));
+    }
+  };
 
   /** 這次結束的服務裡，有哪些手機平台就關哪些模擬器（iOS 在前）；只關開過的平台，一般服務不動。 */
   const closeSimulators = async (
@@ -297,12 +427,13 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { platforms, failure };
   };
 
-  const stop = async (target: Target, manifest: RunManifest, serviceName?: string): Promise<RunActionResult> => {
+  /** names 為 undefined 時結束整個專案；否則只結束指定的這組服務。重新啟動也走這裡，結束的行為與「結束」按鈕一致。 */
+  const stop = async (target: Target, manifest: RunManifest, names?: readonly string[]): Promise<RunActionResult> => {
     const session = sessions.get(target.id);
     if (!session) {
       return fail("nothing-to-do", "尚未啟動");
     }
-    if (serviceName !== undefined && !manifest.services.some((spec) => spec.name === serviceName)) {
+    if (names !== undefined && names.some((name) => !manifest.services.some((spec) => spec.name === name))) {
       return fail("unknown-service", "找不到這個服務");
     }
 
@@ -310,7 +441,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     // 有開過分頁的服務都要關分頁：沒有 port 的服務、以及已經掛掉但分頁還開著的服務也包含在內。
     const opened: string[] = [];
     for (const spec of manifest.services) {
-      if (serviceName !== undefined && spec.name !== serviceName) continue;
+      if (names !== undefined && !names.includes(spec.name)) continue;
       const { state, port } = await serviceState(session, spec.name);
       if (state !== "stopped" && port !== null) {
         active.push({ name: spec.name, port });
@@ -320,7 +451,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
     }
     if (opened.length === 0) {
-      if (serviceName === undefined) {
+      if (names === undefined) {
         sessions.delete(target.id);
         await deps.writePortsFile(target.folder, {}, deps.now());
       }
@@ -396,15 +527,26 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     // 已在執行或正在啟動的服務：沿用它的 port，不再啟動。
-    const session = sessions.get(target.id) ?? { ports: {}, startedAt: {} };
+    let session = sessions.get(target.id) ?? { ports: {}, startedAt: {} };
     const reuse: Record<string, number> = {};
     const skip = new Set<string>();
     for (const spec of manifest.services) {
       if (!spec.port) continue;
       const { state, port } = await serviceState(session, spec.name);
       if (state !== "stopped" && port !== null) {
+        if (spec.fixedPort !== undefined && port !== spec.fixedPort && (!restart || !selected.some((item) => item.name === spec.name))) {
+          return fail("failed", `${spec.name} 正在使用 port ${port}；固定 port 已改為 ${spec.fixedPort}，請重新啟動該服務`);
+        }
         reuse[spec.name] = port;
         if (selected.some((item) => item.name === spec.name)) skip.add(spec.name);
+      }
+    }
+
+    const fixedToLaunch = selected.filter((spec) => spec.fixedPort !== undefined && (restart || !skip.has(spec.name)));
+    for (const spec of fixedToLaunch) {
+      const port = spec.fixedPort as number;
+      if (await deps.probe(port) && (!restart || reuse[spec.name] !== port)) {
+        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；請先釋放該 port，沒有改用其他號碼`);
       }
     }
 
@@ -427,18 +569,44 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       trustRunManifest(db, target.folder, loaded.hash);
     }
 
-    const fresh = await deps.allocatePorts(countFreshPorts(manifest, reuse));
+    // 重新啟動：先把舊的服務、分頁與模擬器結束乾淨再開新的；結束失敗就不開，避免重複開出新分頁。
+    // reuse 在結束前已記下舊 port，所以新服務仍沿用同一組 port。
+    let endedNote = "";
+    if (restart) {
+      const ended = await stop(target, manifest, selected.map((item) => item.name));
+      if (!ended.ok && ended.reason !== "nothing-to-do") {
+        return ended;
+      }
+      if (ended.ok) endedNote = `${ended.message}，`;
+      const oldPorts = selected.map((item) => reuse[item.name]).filter((port): port is number => port !== undefined);
+      const busyPort = await waitForPortsFree(oldPorts);
+      if (busyPort !== null) {
+        log("warn", `無法重新啟動 ${target.label}：舊服務仍占用 port ${busyPort}`);
+        return fail("failed", `舊服務仍占用 port ${busyPort}，沒有重新啟動`);
+      }
+      session = sessions.get(target.id) ?? { ports: {}, startedAt: {} };
+    }
+
+    for (const spec of fixedToLaunch) {
+      const port = spec.fixedPort as number;
+      if (await deps.probe(port)) {
+        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；沒有啟動`);
+      }
+    }
+
+    const excluded = [...manifest.services.flatMap((spec) => spec.fixedPort === undefined ? [] : [spec.fixedPort]), ...Object.values(reuse)];
+    const fresh = await deps.allocatePorts(countFreshPorts(manifest, reuse), excluded);
     const plan = planStart(manifest, selection, reuse, restart ? new Set<string>() : skip, fresh);
     const tabs: ItermTab[] = plan.starts.map((item) => ({
       dir: serviceDirectory(target.folder, item.cwd),
       name: runSessionName(target.id, item.name),
-      command: restart && item.port !== null && reuse[item.name] !== undefined ? `${stopListeningCommand(item.port)} ${item.commandLine}` : item.commandLine
+      command: item.commandLine
     }));
 
     const result = await deps.launchTabs(tabs);
     if (result.code !== 0) {
       if (AUTOMATION_DENIED.test(result.stderr)) {
-        return fail("permission-denied", "macOS 沒有允許 devRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+        return fail("permission-denied", "macOS 沒有允許 GitNRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
       }
       const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
       log("warn", `無法在 iTerm2 啟動 ${target.label}：${detail}`);
@@ -455,7 +623,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
     }
     for (const [name, port] of Object.entries(reuse)) {
-      next.ports[name] = port;
+      if (!plan.starts.some((item) => item.name === name)) next.ports[name] = port;
     }
     sessions.set(target.id, next);
 
@@ -472,15 +640,78 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     log("info", `${restart ? "已在 iTerm2 重新啟動" : "已在 iTerm2 啟動"} ${target.label}：${names.join("、")}`, {
       commands: tabs.map((item) => ({ service: item.name, commandLine: item.command }))
     });
-    return { ok: true, message: `已在 iTerm2 ${restart ? "重新開啟" : "開啟"} ${names.length} 個分頁：${names.join("、")}` };
+    return { ok: true, message: `${endedNote}已在 iTerm2 ${restart ? "重新開啟" : "開啟"} ${names.length} 個分頁：${names.join("、")}` };
+  };
+
+  /** 專案裡有服務在跑、啟動中，或沒有 port 的服務已送出啟動；刪掉依賴會讓這些服務直接掛掉。 */
+  const hasActiveServices = async (target: Target, manifest: RunManifest): Promise<boolean> => {
+    const session = sessions.get(target.id);
+    for (const spec of manifest.services) {
+      const { state } = await serviceState(session, spec.name);
+      if (state !== "stopped" || (!spec.port && session?.startedAt[spec.name] !== undefined)) return true;
+    }
+    return false;
+  };
+
+  /** 在 iTerm2 開分頁刪除 node_modules 並重裝；不需要啟動描述檔，每次都要原生對話框確認。 */
+  const reinstall = async (target: Target): Promise<RunActionResult> => {
+    if (!deps.itermAvailable()) {
+      return fail("iterm-missing", "找不到 iTerm2，請先安裝");
+    }
+    const loaded = await deps.loadManifest(target.folder);
+    if (loaded.status === "ok" && (await hasActiveServices(target, loaded.manifest))) {
+      return fail("running", "請先結束這個專案執行中的服務，再重裝依賴");
+    }
+    const dirs = await installDirectories(target, loaded);
+    if (dirs.length === 0) {
+      return fail("no-package", "找不到 package.json，不是 Node 專案");
+    }
+
+    // 子資料夾沒有自己的 lock 檔時，沿用專案根目錄的套件管理員。
+    const items: Array<{ dir: string; command: string }> = [];
+    let rootManager: InstallManager | null = null;
+    for (const dir of dirs) {
+      const isRoot = dir === target.folder;
+      const manager = await deps.detectInstaller(dir, isRoot ? null : rootManager);
+      if (isRoot) rootManager = manager;
+      items.push({ dir, command: reinstallCommand(manager) });
+    }
+
+    const allowed = await deps.confirmReinstall({
+      label: target.label,
+      folder: target.folder,
+      items: items.map((item) => ({ dir: relative(target.folder, item.dir) || ".", command: item.command }))
+    });
+    if (!allowed) {
+      log("warn", `已取消重裝 ${target.label} 的依賴`);
+      return fail("denied", "你取消了重裝依賴，沒有刪除任何東西");
+    }
+
+    const tabs: ItermTab[] = items.map((item, index) => ({
+      dir: item.dir,
+      name: runSessionName(target.id, index === 0 ? "Reinstall" : `Reinstall-${index + 1}`),
+      command: item.command
+    }));
+    const result = await deps.launchTabs(tabs);
+    if (result.code !== 0) {
+      if (AUTOMATION_DENIED.test(result.stderr)) {
+        return fail("permission-denied", "macOS 沒有允許 GitNRun 控制 iTerm2。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+      }
+      const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+      log("warn", `無法在 iTerm2 重裝 ${target.label} 的依賴：${detail}`);
+      return fail("failed", `無法在 iTerm2 開啟：${detail}`);
+    }
+
+    log("info", `已在 iTerm2 重裝 ${target.label} 的依賴`, { commands: items.map((item) => ({ dir: item.dir, commandLine: item.command })) });
+    return { ok: true, message: `已在 iTerm2 開啟 ${tabs.length} 個分頁刪除 node_modules 並重裝依賴，進度請看終端機` };
   };
 
   return {
     async overview() {
       const itermAvailable = deps.itermAvailable();
+      await migrateLegacyBindings();
       return {
         iterm: itermAvailable,
-        vaultAvailable: deps.vault.isAvailable(),
         targets: await Promise.all(targets().map((target) => viewOf(target, itermAvailable)))
       };
     },
@@ -493,6 +724,9 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       // README 與啟動描述檔無關，沒有描述檔的專案也要能開。
       if (action.scope === "project" && action.action === "readme") {
         return openReadme(target);
+      }
+      if (action.scope === "project" && action.action === "reinstall") {
+        return reinstall(target);
       }
       const loaded = await deps.loadManifest(target.folder);
       if (loaded.status === "missing") {
@@ -508,7 +742,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         return openWeb(target, loaded.manifest, action.service);
       }
       if (action.action === "stop") {
-        return stop(target, loaded.manifest, action.service);
+        return stop(target, loaded.manifest, [action.service]);
       }
       return start(target, loaded, { service: action.service }, action.action === "restart");
     },
@@ -530,8 +764,10 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
       removeRunFolder(db, parsed.id);
       sessions.delete(targetId);
-      // 資料夾的識別號之後會被新加入的資料夾沿用，帳號與密碼不能留給下一個人。
+      // 資料夾的識別號之後會被新加入的資料夾沿用，帳號與密碼來源不能留給下一個人。
       setRunAccount(db, targetId, "");
+      setPasscodeBinding(db, targetId, null);
+      candidateCache.delete(targetId);
       deps.vault.delete(passcodeSecretName(targetId));
     },
 
@@ -547,16 +783,80 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     },
 
     async copyPasscode(targetId) {
+      const target = findTarget(targetId);
+      if (!target) {
+        throw new UserFacingError("找不到這個專案");
+      }
+      const binding = getPasscodeBinding(db, targetId);
+      if (binding === null) {
+        throw new UserFacingError(passcodeProblem("unbound", null));
+      }
+      // 每次都重新讀檔：專案改了密碼，下一次複製就是新的；來源不可用時不退回任何舊值。
+      const read = await deps.passcodeSource.read(target.folder, binding);
+      if (read.state !== "ok" || read.value === null) {
+        throw new UserFacingError(passcodeProblem(read.state, binding));
+      }
+      await deps.copySecret(read.value);
+    },
+
+    bindPasscode(targetId, binding) {
       if (!findTarget(targetId)) {
         throw new UserFacingError("找不到這個專案");
       }
-      try {
-        await deps.vault.useSecret(passcodeSecretName(targetId), (secret) => deps.copySecret(secret));
-      } catch (error) {
-        if (error instanceof SecretMissingError) throw new UserFacingError("還沒有設定密碼");
-        if (error instanceof SecretUnreadableError) throw new UserFacingError("密碼無法解密，請重新輸入");
-        throw error;
+      const normalized = normalizePasscodeBinding(binding);
+      if (normalized === null) {
+        throw new UserFacingError("環境檔需是專案內的 .env、.env.local、.env.development、.env.development.local 或 .dev.vars，鍵名需是大寫英數與底線，且不能是 NEXT_PUBLIC_、VITE_ 這類會公開的前綴");
       }
+      setPasscodeBinding(db, targetId, normalized);
+      candidateCache.delete(targetId);
+    },
+
+    unbindPasscode(targetId) {
+      if (!findTarget(targetId)) {
+        throw new UserFacingError("找不到這個專案");
+      }
+      setPasscodeBinding(db, targetId, null);
+      candidateCache.delete(targetId);
+    },
+
+    async openPasscodeFile(targetId) {
+      const target = findTarget(targetId);
+      if (!target) {
+        throw new UserFacingError("找不到這個專案");
+      }
+      const binding = getPasscodeBinding(db, targetId);
+      if (binding === null) {
+        throw new UserFacingError(passcodeProblem("unbound", null));
+      }
+      const path = await deps.passcodeSource.locate(target.folder, binding);
+      if (path === null) {
+        throw new UserFacingError(`找不到可以安全開啟的環境檔：${binding.file}`);
+      }
+      const result = await deps.openDocument(path);
+      if (!result.ok) {
+        throw new UserFacingError(result.message);
+      }
+      log("info", `已開啟 ${target.label} 的環境檔 ${binding.file}`);
+    },
+
+    scanPorts: () => deps.portSweep.scan(),
+
+    async releasePorts() {
+      const result = await deps.portSweep.release();
+      // 被結束的 port 不再算 GitNRun 啟動的服務，否則卡片會停在「啟動中」。
+      const endedPorts = new Set(result.ended.flatMap((item) => item.ports));
+      for (const [targetId, session] of sessions) {
+        for (const [name, port] of Object.entries(session.ports)) {
+          if (!endedPorts.has(port)) continue;
+          delete session.ports[name];
+          delete session.startedAt[name];
+        }
+        if (Object.keys(session.ports).length === 0 && Object.keys(session.startedAt).length === 0) sessions.delete(targetId);
+      }
+      const describe = (items: typeof result.ended): string => items.map((item) => `${item.command}(${item.ports.join("、")})`).join("、");
+      if (result.ended.length > 0) log("info", `已釋放終端機 port：${describe(result.ended)}`);
+      if (result.failed.length > 0) log("warn", `無法結束占用 port 的程序：${describe(result.failed)}`);
+      return result;
     }
   };
 };

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { RETENTION_CHOICES, type AppSettings, type BackupFileInfo, type DataCategoryUsage, type DataUsage } from "@shared/app-settings";
+import { RETENTION_CHOICES, type AppSettings, type BackupOverview, type DataCategoryUsage, type DataUsage } from "@shared/app-settings";
 import { errorMessage, formatBytes, formatDateTime } from "@shared/format";
+import { HelpTip } from "./HelpTip";
 
 const RETENTION_ITEMS: ReadonlyArray<{ key: "events" | "logs" | "aiCalls"; title: string; note: string }> = [
   {
@@ -16,7 +17,7 @@ const RETENTION_ITEMS: ReadonlyArray<{ key: "events" | "logs" | "aiCalls"; title
   {
     key: "aiCalls",
     title: "AI 呼叫記錄",
-    note: "每次呼叫 AI 的用途、模型、用量與回覆。相同輸入會直接取用先前的回覆來省下重複呼叫，這份快取另有自己的保留時間，不受下方選項影響。"
+    note: "每次呼叫 AI 的用途、模型、用量與回覆。相同輸入會直接取用先前的回覆來省下重複呼叫，這份快取另有自己的保留時間，不受保留期限設定影響。"
   }
 ];
 
@@ -31,21 +32,27 @@ const usageText = (usage: DataCategoryUsage): string =>
         .filter((part) => part !== null)
         .join("、");
 
-/** 一般設定：資料保留期限、專案根目錄，以及設定的備份與還原。 */
+/** 備份區同一時間只開一個確認列：還原、刪除單份、全部刪除共用。 */
+type BackupConfirm = { kind: "restore" | "delete"; name: string } | { kind: "delete-all" };
+
+/** 結果訊息所屬的區塊：保留期限、專案根目錄、設定備份。 */
+type Section = "retention" | "root" | "backup";
+type Notice = { section: Section; tone: "ok" | "error"; text: string };
+
+/** 一般設定：資料保留期限、專案根目錄，以及設定的備份、還原與刪除。 */
 export const GeneralPanel = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [usage, setUsage] = useState<DataUsage | null>(null);
-  const [backups, setBackups] = useState<BackupFileInfo[]>([]);
-  const [confirmingRestore, setConfirmingRestore] = useState<string | null>(null);
+  const [overview, setOverview] = useState<BackupOverview | null>(null);
+  const [confirming, setConfirming] = useState<BackupConfirm | null>(null);
   const [root, setRoot] = useState("");
   const [savedRoot, setSavedRoot] = useState("");
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   const refresh = useCallback(() => {
     void window.gitNRun.getAppSettings().then(setSettings);
     void window.gitNRun.getDataUsage().then(setUsage);
-    void window.gitNRun.listBackups().then(setBackups);
+    void window.gitNRun.listBackups().then(setOverview);
   }, []);
 
   useEffect(refresh, [refresh]);
@@ -58,65 +65,65 @@ export const GeneralPanel = () => {
         setRoot(value);
         setSavedRoot(value);
       })
-      .catch((rootError) => setError(errorMessage(rootError)));
+      .catch((rootError) => setNotice({ section: "root", tone: "error", text: errorMessage(rootError) }));
   }, []);
 
   if (!settings) return null;
 
   const saveRoot = async () => {
-    setMessage("");
-    setError("");
+    setNotice(null);
     try {
       const value = await window.gitNRun.setDocumentRoot(root);
       setRoot(value);
       setSavedRoot(value);
-      setMessage(value === "" ? "已關閉專案根目錄自動掃描" : "已更新專案根目錄");
+      setNotice({ section: "root", tone: "ok", text: value === "" ? "已關閉自動掃描" : "已更新專案根目錄" });
     } catch (rootError) {
-      setError(errorMessage(rootError));
+      setNotice({ section: "root", tone: "error", text: errorMessage(rootError) });
     }
   };
 
-  const run = async (action: () => Promise<unknown>, success: string) => {
-    setMessage("");
-    setError("");
+  const backups = overview?.files ?? [];
+
+  const run = async <T,>(section: Section, action: () => Promise<T>, success: string | ((result: T) => string)) => {
+    setNotice(null);
     try {
-      await action();
-      setMessage(success);
+      const result = await action();
+      setNotice({ section, tone: "ok", text: typeof success === "function" ? success(result) : success });
       refresh();
     } catch (actionError) {
-      setError(errorMessage(actionError));
+      setNotice({ section, tone: "error", text: errorMessage(actionError) });
     }
   };
+
+  // 結果只顯示在所屬區塊的控制項下方，不集中到面板底部。
+  const noticeFor = (section: Section) =>
+    notice && notice.section === section ? <p className={notice.tone === "ok" ? "ok" : "warn pre-line"}>{notice.text}</p> : null;
 
   return (
     <section className="panel">
       <h2>一般</h2>
 
-      <h3>資料保留</h3>
-      <p className="muted">
-        以下三類資料由 app 自動、持續累積：推送越頻繁、AI 用得越多，這台電腦上的資料庫就越大。沒有人會逐筆去刪，所以由 app 每天自動清掉超過保留天數的資料，
-        你只需要決定要留多久。這些資料只存在本機，不會上傳。
-      </p>
-      <ul className="plain-list retention-list">
-        {RETENTION_ITEMS.map((item) => (
-          <li key={item.key}>
-            <strong>{item.title}</strong>
-            <span className="muted">：{usage ? usageText(usage[item.key]) : "讀取中…"}</span>
-            <p className="muted">{item.note}</p>
-          </li>
-        ))}
-      </ul>
-      {usage ? (
-        <p className="muted">
-          資料庫檔案共 {formatBytes(usage.databaseBytes)}，其中 {formatBytes(usage.freeBytes)} 是已清掉、等著被新資料重複使用的空間；清理後檔案不會立刻縮小。
-        </p>
-      ) : null}
+      <div className="settings-heading">
+        <h3>資料保留</h3>
+        <HelpTip label="資料保留說明">
+          <p>事件、日誌與 AI 呼叫記錄由 app 持續累積，每天自動清掉超過保留天數的資料。這些資料只存在這台電腦，不會上傳。</p>
+          <ul>
+            {RETENTION_ITEMS.map((item) => (
+              <li key={item.key}>
+                <strong>{item.title}</strong>：{item.note}
+              </li>
+            ))}
+          </ul>
+          <p>清理後資料庫檔案不會立刻縮小；選「永久保留」資料會持續增加。</p>
+        </HelpTip>
+      </div>
       <label className="field">
-        事件、日誌與 AI 呼叫記錄保留多久（每天清理一次；選「永久保留」資料會持續增加）
+        保留期限（每天自動清理）
         <select
           value={settings.retentionDays === null ? "forever" : String(settings.retentionDays)}
           onChange={(event) =>
             void run(
+              "retention",
               () => window.gitNRun.saveAppSettings({ retentionDays: event.target.value === "forever" ? null : Number(event.target.value) }),
               "已儲存"
             )
@@ -132,9 +139,31 @@ export const GeneralPanel = () => {
           )}
         </select>
       </label>
+      {noticeFor("retention")}
+      {usage ? (
+        <ul className="plain-list">
+          {RETENTION_ITEMS.map((item) => (
+            <li key={item.key}>
+              <strong>{item.title}</strong>
+              <span className="muted">：{usageText(usage[item.key])}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">讀取中…</p>
+      )}
+      {usage ? (
+        <p className="muted">
+          資料庫共 {formatBytes(usage.databaseBytes)}，其中 {formatBytes(usage.freeBytes)} 可重新使用。
+        </p>
+      ) : null}
 
-      <h3>專案根目錄</h3>
-      <p className="muted">Git / GitHub 頁會掃描這個資料夾底下第一層含 .git 的資料夾，自動列為專案；留空 = 不自動掃描。</p>
+      <div className="settings-heading">
+        <h3>專案根目錄</h3>
+        <HelpTip label="專案根目錄說明">
+          <p>這個資料夾底下第一層含 .git 的資料夾，會被掃描來讀取對應的 GitHub issues。</p>
+        </HelpTip>
+      </div>
       <form
         className="row-actions"
         onSubmit={(event) => {
@@ -147,108 +176,109 @@ export const GeneralPanel = () => {
           儲存
         </button>
       </form>
+      {noticeFor("root")}
+      <p className="muted">留空即不自動掃描。</p>
 
-      <h3>設定備份</h3>
-      <p className="muted">
-        備份只保存在這台電腦的 app 資料夾，沒有雲端同步，也不會推到 GitHub 或其他服務。備份包含專案、文件捷徑、規則、終端機映射、分支命名規則與設定，
-        <strong>不包含任何金鑰</strong>、dev 通關密碼或已確認指令記錄。換機或重灌後如果沒有保留本機資料夾，就需要重新設定。還原後規則一律回到「寫入動作需確認」。
-        每天晚上 10 點自動建立一份本機備份（若當時電腦睡眠或關機，下次啟動時補做），保留最近 10 份；也可以按「立即備份」。
-      </p>
+      <div className="settings-heading">
+        <h3>設定備份</h3>
+        <HelpTip label="設定備份說明">
+          <p>
+            備份只存在這台電腦的 app 資料夾，沒有雲端同步，也不會推到 GitHub 或其他服務。備份包含專案、文件捷徑、規則、終端機映射、分支命名規則與設定，
+            <strong>不包含任何金鑰</strong>、dev 通關密碼或已確認指令記錄。
+          </p>
+          <p>換機或重灌後如果沒有保留本機資料夾，就需要重新設定。還原會取代現有的規則與映射，規則一律回到「寫入動作需確認」。</p>
+          {overview ? (
+            <p>
+              每天 22:00 自動備份一次（若當時電腦睡眠或關機，下次啟動時補做）。內容沒有變動時不會新增檔案，最多保留最近 {overview.keep} 份，超過會自動刪掉最舊的。
+            </p>
+          ) : null}
+        </HelpTip>
+      </div>
       <div className="row-actions">
-        <button type="button" onClick={() => void run(async () => void (await window.gitNRun.backupNow()), "已備份（內容沒有變動時不會新增檔案）")}>
+        <button type="button" onClick={() => void run("backup", async () => void (await window.gitNRun.backupNow()), "已備份")}>
           立即備份
         </button>
+        {confirming?.kind === "delete-all" ? (
+          <>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                setConfirming(null);
+                void run("backup", () => window.gitNRun.deleteAllBackups(), (result) => `已刪除全部 ${result.removed} 份備份`);
+              }}
+            >
+              確定刪除全部 {backups.length} 份（無法復原）
+            </button>
+            <button type="button" onClick={() => setConfirming(null)}>
+              取消
+            </button>
+          </>
+        ) : (
+          <button type="button" disabled={backups.length === 0} onClick={() => setConfirming({ kind: "delete-all" })}>
+            全部刪除
+          </button>
+        )}
       </div>
+      {noticeFor("backup")}
+      {overview ? (
+        <p className="muted">
+          下次自動備份 {formatDateTime(overview.nextAutoBackupAt)}
+          {backups[0] ? `；最近一份 ${formatDateTime(backups[0].createdAt)}` : null}
+        </p>
+      ) : null}
       {backups.length === 0 ? <p className="muted">還沒有備份。</p> : null}
       <ul className="plain-list">
         {backups.map((backup) => (
           <li key={backup.name} className="row-actions">
             <span>{formatDateTime(backup.createdAt)}</span>
             <span className="muted">{formatBytes(backup.bytes)}</span>
-            {confirmingRestore === backup.name ? (
+            {confirming && confirming.kind !== "delete-all" && confirming.name === backup.name ? (
               <>
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => {
-                    setConfirmingRestore(null);
-                    void run(async () => {
-                      const summary = await window.gitNRun.restoreBackup(backup.name);
-                      setMessage(`已還原：${summary.projects} 個專案、${summary.rules} 條規則、${summary.terminalMappings} 個映射`);
-                    }, "已還原");
-                  }}
-                >
-                  確定還原（會取代現有的規則與映射）
-                </button>
-                <button type="button" onClick={() => setConfirmingRestore(null)}>
+                {confirming.kind === "restore" ? (
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      setConfirming(null);
+                      void run(
+                        "backup",
+                        () => window.gitNRun.restoreBackup(backup.name),
+                        (summary) => `已還原：${summary.projects} 個專案、${summary.rules} 條規則、${summary.terminalMappings} 個映射`
+                      );
+                    }}
+                  >
+                    確定還原（會取代現有的規則與映射）
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      setConfirming(null);
+                      void run("backup", () => window.gitNRun.deleteBackup(backup.name), "已刪除這份備份");
+                    }}
+                  >
+                    確定刪除（無法復原）
+                  </button>
+                )}
+                <button type="button" onClick={() => setConfirming(null)}>
                   取消
                 </button>
               </>
             ) : (
-              <button type="button" onClick={() => setConfirmingRestore(backup.name)}>
-                還原
-              </button>
+              <>
+                <button type="button" onClick={() => setConfirming({ kind: "restore", name: backup.name })}>
+                  還原
+                </button>
+                <button type="button" onClick={() => setConfirming({ kind: "delete", name: backup.name })}>
+                  刪除
+                </button>
+              </>
             )}
           </li>
         ))}
       </ul>
-
-      {message ? <p className="ok">{message}</p> : null}
-      {error ? <p className="warn pre-line">{error}</p> : null}
-    </section>
-  );
-};
-
-const GITHUB_NEW_TOKEN_URL = "https://github.com/settings/personal-access-tokens/new";
-
-/** 取得 GitHub Token 的步驟：Git / GitHub 頁要讀 issues 就需要它，貼上的地方是下方的「金鑰」。 */
-export const GithubTokenGuide = () => {
-  const [error, setError] = useState("");
-
-  const openCreatePage = async () => {
-    setError("");
-    try {
-      await window.gitNRun.openExternalLink(GITHUB_NEW_TOKEN_URL);
-    } catch (openError) {
-      setError(errorMessage(openError));
-    }
-  };
-
-  return (
-    <section className="panel">
-      <h2>取得 GitHub Token</h2>
-      <p className="muted">
-        Git / GitHub 頁要顯示 open issues 需要 GitHub Token。建議用 fine-grained token，只給讀取權限；GitNRun 不會寫入 GitHub。
-      </p>
-      <ol className="steps">
-        <li>
-          登入 GitHub，開啟建立頁面（下方按鈕），或依序點 Settings → Developer settings → Personal access tokens → Fine-grained tokens →
-          Generate new token。
-        </li>
-        <li>Token name 填 GitNRun；Expiration 建議 90 天內；Resource owner 選 repo 所屬的帳號或組織。</li>
-        <li>Repository access 選 Only select repositories，只勾要看 issues 的 repo。</li>
-        <li>
-          Repository permissions 把 <strong>Issues</strong> 設為 Read-only（Metadata 會自動帶入 Read-only）。想讓「監視推送」共用同一把，再把{" "}
-          <strong>Contents</strong> 設為 Read-only；其他全部維持 No access。
-        </li>
-        <li>
-          按 Generate token，複製 <code className="mono">github_pat_</code> 開頭的字串，離開頁面後就看不到了。
-        </li>
-        <li>回到本頁下方「金鑰」的 GitHub Token 欄位貼上，按「儲存」，再按「測試連線」確認。</li>
-      </ol>
-      <h3>注意事項</h3>
-      <ul className="steps">
-        <li>repo 屬於組織時，組織可能要求管理者核准 token 才能存取。</li>
-        <li>Token 到期或被撤銷後，Git / GitHub 頁會顯示「GitHub token 無法讀取 issues」，重新產生並貼上覆蓋即可。</li>
-        <li>不建議使用 classic token：私有 repo 需要 repo 權限，範圍過大。</li>
-        <li>Token 以系統 Keychain 保護的方式加密存在本機，儲存後畫面不會再顯示。</li>
-      </ul>
-      <div className="row-actions">
-        <button type="button" onClick={() => void openCreatePage()}>
-          在瀏覽器開啟建立頁面
-        </button>
-      </div>
-      {error ? <p className="warn pre-line">{error}</p> : null}
     </section>
   );
 };

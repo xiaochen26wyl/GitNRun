@@ -157,11 +157,20 @@ describe("assigned head palettes", () => {
     assert.deepEqual(lookupHeadPalette("/work/Usage-Pulse/README.md"), { background: "#4C1D95", text: "#FFFFFF" });
   });
 
-  it("puts the fictionPurr family on its secondary color and xiaochenStudio on the primary one", () => {
+  it("puts the creator family on a white bar with black text and a black outline, and xiaochenStudio on the primary color", () => {
     for (const name of ["fictionPurr", "mahoPurr-Catalyst", "translationService"]) {
-      assert.equal(lookupHeadPalette(`/work/${name}`)?.background, "#FB7185", name);
+      assert.deepEqual(lookupHeadPalette(`/work/${name}`), { background: "#FFFFFF", text: "#000000", border: "#000000" }, name);
     }
     assert.equal(lookupHeadPalette("/work/xiaochenStudio")?.background, "#0066CC");
+  });
+
+  it("adds the outline variable only for palettes that have an outline", () => {
+    assert.deepEqual(projectHeadProps({}, "/work/fictionPurr/README.md").style, {
+      "--brand": "#FFFFFF",
+      "--brand-fg": "#000000",
+      "--brand-border": "#000000"
+    });
+    assert.equal(projectHeadProps({}, "/work/xiaochenStudio").style?.["--brand-border"], undefined);
   });
 
   it("wins over the README color", () => {

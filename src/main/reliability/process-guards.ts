@@ -37,11 +37,11 @@ export const installProcessGuards = (options: { getLogger: () => Logger | null }
 
   const fatal = (): void => {
     if (guard.allowRestart()) {
-      report("短時間內發生太多錯誤，重新啟動 devRun");
+      report("短時間內發生太多錯誤，重新啟動 GitNRun");
       native().relaunch();
       return;
     }
-    native().showErrorBox("devRun 無法穩定執行", "短時間內已經重新啟動多次仍然發生錯誤，為了避免無限重啟，這次不再自動重啟。請到日誌查看原因，或重新開啟 App。");
+    native().showErrorBox("GitNRun 無法穩定執行", "短時間內已經重新啟動多次仍然發生錯誤，為了避免無限重啟，這次不再自動重啟。請到日誌查看原因，或重新開啟 App。");
     native().exit(1);
   };
 

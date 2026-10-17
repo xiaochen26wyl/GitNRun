@@ -11,4 +11,6 @@ export const registerAppSettingsIpc = (handlers: AppSettingsHandlers): void => {
   handleIpc(IPC.backupsList, asNoArgs, () => handlers.listBackups());
   handleIpc(IPC.backupsNow, asNoArgs, () => handlers.backupNow());
   handleIpc(IPC.backupsRestore, asBackupNameArgs, (name) => handlers.restore(name));
+  handleIpc(IPC.backupsDelete, asBackupNameArgs, (name) => handlers.deleteBackup(name));
+  handleIpc(IPC.backupsDeleteAll, asNoArgs, () => handlers.deleteAllBackups());
 };

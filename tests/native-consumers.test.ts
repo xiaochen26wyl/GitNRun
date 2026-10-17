@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ConfirmRequest } from "@shared/rule-runs";
-import { SECRET_CLIPBOARD_TTL_MS, copySecretToClipboard } from "@main/clipboard-secret";
+import { SECRET_CLIPBOARD_TTL_MS, copySecretToClipboard, copySecretToClipboardChecked } from "@main/clipboard-secret";
 import { setNative, type NativeConfirm } from "@main/native/bridge";
 import { showConfirmDialog } from "@main/rules/confirm-dialog";
 import { createFakeNative } from "./helpers/fake-native";
@@ -74,5 +74,10 @@ describe("copySecretToClipboard", () => {
     setNative(createFakeNative({ clipboardWriteExpiring: async () => Promise.reject(new Error("no clipboard")) }).bridge);
     assert.doesNotThrow(() => copySecretToClipboard("secret"));
     await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it("lets the run-page caller report a clipboard write failure", async () => {
+    setNative(createFakeNative({ clipboardWriteExpiring: async () => Promise.reject(new Error("no clipboard")) }).bridge);
+    await assert.rejects(copySecretToClipboardChecked("secret"), /no clipboard/);
   });
 });

@@ -79,7 +79,7 @@ export interface HostInfo {
   appName: string;
   appVersion: string;
   platform: string;
-  /** 使用者資料根目錄（沿用既有的 devRun 目錄，不搬資料）。 */
+  /** 使用者資料根目錄（GitNRun 目錄）。 */
   dataDir: string;
   /** 打包版才會註冊 URL scheme。 */
   packaged: boolean;

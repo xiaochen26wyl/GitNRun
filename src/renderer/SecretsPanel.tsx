@@ -7,13 +7,20 @@ import {
   type SecretTestResult,
   type SecretsOverview
 } from "@shared/secrets";
+import { HelpTip } from "./HelpTip";
 
 /** 設定頁目前只開放 GitHub Token；其他固定金鑰（AI、Slack、SMTP）沒有對應功能頁，不顯示。 */
 const VISIBLE_SECRET_NAMES: readonly FixedSecretName[] = ["github.pat"];
 
+/** 各金鑰標題旁 ⓘ 的說明；權限範圍與 github-token-check.ts 的讀取權限一致。 */
+const SECRET_HELP: Partial<Record<FixedSecretName, string>> = {
+  "github.pat": "需要 fine-grained token 的讀取權限：Issues: Read、Metadata: Read；監視推送另需 Contents: Read。"
+};
+
 interface RowProps {
   status: SecretStatus;
   label: string;
+  help?: string;
   disabled: boolean;
   onChanged: () => void;
 }
@@ -25,7 +32,7 @@ const stateText = (status: SecretStatus): string => {
   return status.state === "unreadable" ? "已存但無法解密，請重新輸入" : `已設定 ${maskedDisplay(status)}`;
 };
 
-const SecretRow = ({ status, label, disabled, onChanged }: RowProps) => {
+const SecretRow = ({ status, label, help, disabled, onChanged }: RowProps) => {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -67,7 +74,10 @@ const SecretRow = ({ status, label, disabled, onChanged }: RowProps) => {
   return (
     <li className="secret-row">
       <div className="secret-head">
-        <strong>{label}</strong>
+        <span className="secret-title">
+          <strong>{label}</strong>
+          {help ? <HelpTip label={`${label}的權限說明`}>{help}</HelpTip> : null}
+        </span>
         <span className={status.state === "unreadable" ? "warn" : "muted"}>{stateText(status)}</span>
       </div>
       <div className="secret-controls">
@@ -120,11 +130,13 @@ export const SecretsPanel = () => {
 
   return (
     <section className="panel">
-      <h2>金鑰</h2>
-      <p className="muted">金鑰以系統 Keychain 保護的方式加密後存在本機，儲存後畫面上不會再顯示完整內容。</p>
-      {overview.available ? null : (
-        <p className="warn">此電腦無法使用系統金鑰保護，為了安全，所有金鑰都無法儲存。</p>
-      )}
+      <div className="settings-heading">
+        <h2>金鑰</h2>
+        <HelpTip label="金鑰說明">
+          <p>金鑰以系統 Keychain 保護的方式加密後存在本機。儲存後畫面不會再顯示完整內容，輸入框也會立刻清空。</p>
+        </HelpTip>
+      </div>
+      {overview.available ? null : <p className="warn">此電腦無法使用系統金鑰保護，目前無法儲存金鑰。</p>}
       <ul className="secret-list">
         {VISIBLE_SECRET_NAMES.map((name) => {
           const status = overview.secrets.find((entry) => entry.name === name);
@@ -133,6 +145,7 @@ export const SecretsPanel = () => {
               key={name}
               status={status}
               label={SECRET_LABELS[name]}
+              help={SECRET_HELP[name]}
               disabled={!overview.available}
               onChanged={refresh}
             />

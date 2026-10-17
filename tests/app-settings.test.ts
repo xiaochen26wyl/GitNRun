@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { createAppSettingsHandlers } from "@main/app-settings";
+import { DAILY_BACKUP_HOUR } from "@main/backup-schedule";
+import { BACKUP_KEEP } from "@main/db/backup";
 import { addProject } from "@main/db/projects-repo";
 import { listRules, createRule } from "@main/db/rules-repo";
 import { saveMapping, listMappings } from "@main/db/mappings-repo";
@@ -83,21 +85,21 @@ describe("backups", () => {
     t.handlers.save({ retentionDays: 14 });
     assert.deepEqual(t.handlers.backupNow(), { written: true });
 
-    const list = t.handlers.listBackups();
+    const list = t.handlers.listBackups().files;
     assert.equal(list.length, 2);
     assert.ok(list[0] && list[1] && list[0].name > list[1].name);
     assert.ok(list.every((entry) => entry.bytes > 0 && entry.createdAt > 0));
   });
 
   it("an empty backup folder lists nothing", () => {
-    assert.deepEqual(setup().handlers.listBackups(), []);
+    assert.deepEqual(setup().handlers.listBackups().files, []);
   });
 
   it("a backup made on one machine restores into a brand-new database — rules come back with the confirmation gate on", () => {
     const source = setup();
     populate(source);
     source.handlers.backupNow();
-    const [backup] = source.handlers.listBackups();
+    const [backup] = source.handlers.listBackups().files;
     assert.ok(backup);
 
     // 全新的資料庫與備份資料夾；把來源的備份檔放進去（等同換機後把備份檔複製過來）。
@@ -118,7 +120,7 @@ describe("backups", () => {
     const t = setup();
     populate(t);
     t.handlers.backupNow();
-    const [backup] = t.handlers.listBackups();
+    const [backup] = t.handlers.listBackups().files;
     assert.ok(backup);
 
     // 弄壞現有設定，再還原。
@@ -147,23 +149,87 @@ describe("backups", () => {
     const t = setup();
     populate(t);
     t.handlers.backupNow();
-    const [backup] = t.handlers.listBackups();
+    const [backup] = t.handlers.listBackups().files;
     writeFileSync(join(t.backupDir, backup!.name), JSON.stringify({ schemaVersion: 1, exportedAt: 1, apiKeys: [{ name: "x" }] }));
 
     assert.throws(() => t.handlers.restore(backup!.name), (error) => error instanceof UserFacingError && error.message.includes("無法還原"));
     assert.equal(listRules(t.db).length, 1);
     assert.equal(t.calls.restored, 0);
   });
+
+  // 每次改保留天數再備份，內容不同才會各寫一份。
+  const makeBackups = (t: ReturnType<typeof setup>, count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      t.handlers.save({ retentionDays: 10 + i });
+      assert.deepEqual(t.handlers.backupNow(), { written: true });
+    }
+  };
+
+  it("deletes one backup by name and leaves the others", () => {
+    const t = setup();
+    makeBackups(t, 3);
+    const [newest, middle, oldest] = t.handlers.listBackups().files;
+    assert.ok(newest && middle && oldest);
+
+    t.handlers.deleteBackup(middle.name);
+    assert.deepEqual(t.handlers.listBackups().files.map((file) => file.name), [newest.name, oldest.name]);
+  });
+
+  it("only deletes files that are in the backup folder and look like backups", () => {
+    const t = setup();
+    makeBackups(t, 1);
+    writeFileSync(join(t.backupDir, "notes.txt"), "keep me");
+    for (const bad of ["../../etc/passwd", "/etc/passwd", "config-nope.json", "config-20260101-000000-000.json", "", "notes.txt"]) {
+      assert.throws(() => t.handlers.deleteBackup(bad), (error) => error instanceof UserFacingError && error.message.includes("找不到"), bad);
+    }
+    assert.equal(t.handlers.listBackups().files.length, 1);
+    assert.equal(existsSync(join(t.backupDir, "notes.txt")), true);
+  });
+
+  it("delete all removes every backup, reports the count and keeps unrelated files", () => {
+    const t = setup();
+    makeBackups(t, 3);
+    writeFileSync(join(t.backupDir, "notes.txt"), "keep me");
+
+    assert.deepEqual(t.handlers.deleteAllBackups(), { removed: 3 });
+    assert.deepEqual(t.handlers.listBackups().files, []);
+    assert.equal(existsSync(join(t.backupDir, "notes.txt")), true);
+    assert.deepEqual(t.handlers.deleteAllBackups(), { removed: 0 }, "nothing left to delete is not an error");
+  });
+
+  it("deleting everything does not stop backups: the next change is written as a fresh backup", () => {
+    const t = setup();
+    makeBackups(t, 2);
+    t.handlers.deleteAllBackups();
+    assert.deepEqual(t.handlers.backupNow(), { written: true });
+    assert.equal(t.handlers.listBackups().files.length, 1);
+  });
+
+  it("reports when the next automatic backup runs and how many are kept, even with no backups yet", () => {
+    const t = setup();
+    const overview = t.handlers.listBackups();
+    assert.deepEqual(overview.files, []);
+    assert.equal(overview.keep, BACKUP_KEEP);
+    assert.ok(overview.nextAutoBackupAt > 1_700_000_000_000);
+    assert.equal(new Date(overview.nextAutoBackupAt).getHours(), DAILY_BACKUP_HOUR);
+  });
 });
 
 import { RETENTION_CHOICES } from "@shared/app-settings";
-import { asAppSettingsArgs, asBackupNameArgs, isKnownChannel } from "@main/ipc-validation";
+import { asAppSettingsArgs, asBackupNameArgs, asNoArgs, isKnownChannel } from "@main/ipc-validation";
 import { IPC } from "@shared/ipc";
 
 describe("settings IPC arguments", () => {
   it("channels are declared", () => {
-    for (const channel of [IPC.appSettingsGet, IPC.appSettingsSave, IPC.backupsList, IPC.backupsNow, IPC.backupsRestore]) {
+    for (const channel of [IPC.appSettingsGet, IPC.appSettingsSave, IPC.backupsList, IPC.backupsNow, IPC.backupsRestore, IPC.backupsDelete, IPC.backupsDeleteAll]) {
       assert.equal(isKnownChannel(channel), true, channel);
+    }
+  });
+
+  it("delete all takes no arguments", () => {
+    assert.deepEqual(asNoArgs([]), []);
+    for (const bad of [["config-20261009-103045-123.json"], [null], [{}]]) {
+      assert.equal(asNoArgs(bad), null, JSON.stringify(bad));
     }
   });
 

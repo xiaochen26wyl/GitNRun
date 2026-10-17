@@ -20,8 +20,8 @@
 | 規則引擎 | 依事件自動通知、呼叫外部服務或執行本機動作 | 已支援條件與多種動作 | 寫入型動作預設需確認；匯入規則預設停用且需要確認 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
-| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依資料夾名稱分成 5 個分組頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 devRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要改分組得改程式 |
-| Dev 通關帳密 | 方便保存專案 dev/debug 登入資料 | 已支援專案層級帳號與加密密碼 | 帳密不進備份；換機或還原後需重新輸入 |
+| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依資料夾名稱分成 5 個分組頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要改分組得改程式 |
+| Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（GitNRun 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
 | 郵件通知 | 透過 email 推送事件或規則結果 | 動作類型保留 | 執行器尚未實作 |
 
@@ -65,7 +65,7 @@
 
 專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描 `/Users/zorawl/Documents/GitHub` 第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
 
-專案啟動拆成 5 個頂部分組頁籤：開源Free（Usage-Pulse）、SAAS（stockPaw、toBloom、xiaochenStudio）、創作者宇宙（MahoPurr-Catalyst、fictionPurr、translationService）、自己用（GitNRun、socialHub）、不知道什麼時候才完成（yumeAegis）。每個頁籤只列屬於該組的專案；歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。分組表與比對規則在 `src/shared/run-groups.ts`。
+專案啟動拆成 5 個頂部分組頁籤：開源Free（Usage-Pulse）、SAAS（stockPaw、toBloom、xiaochenStudio）、創作者宇宙（fictionPurr、translationService、MahoPurr-Catalyst）、自己用（GitNRun、socialHub）、不知道什麼時候才完成（yumeAegis）。每個頁籤只列屬於該組的專案；歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。頁籤內的專案依分組表的資料夾順序排列，不受資料表或資料夾掃描順序影響；fictionPurr 卡片內的服務列另依開發優先順序排列（api、desktop-mahopurr、mobile-mahopurr、web-sparkpurr、mobile-fictionpurr、web-fictionpurr、mobile-anipurr、mobile-poppurr，同層級相鄰，未列到的服務接在最後），只影響畫面順序，不影響啟動順序。分組表、服務列順序表與比對規則都在 `src/shared/run-groups.ts`。
 
 `.gitnrun/run.json` 是進階覆寫設定，可進版控，用來明確描述服務啟動方式。
 
@@ -79,6 +79,7 @@
       "cwd": "apps/api",
       "command": ["make", "run"],
       "port": true,
+      "fixedPort": 5174,
       "env": { "PORT": "{port}", "FRONTEND_URL": "{web.url}" }
     },
     {
@@ -102,10 +103,11 @@
 
 - `role` 支援 `backend`、`frontend`、`desktop`。
 - 後端與前端服務必須 `port: true`。
+- 可選 `fixedPort: 1024～65535`；只能用於 `port: true`，同一描述檔不可重複。未指定者維持動態配置；固定 port 已被占用時拒絕啟動，不改用其他號碼，也不結束占用它的程序。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（`flutter run -d iPhone`）、`flutter-android`（`flutter run -d emulator`）。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待固定的 `498D038D-9A95-4CB5-967C-B846B0E93DE8`，再執行 Flutter）、`flutter-android`（先啟動固定的 `Pixel_6_API_34_dev` AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 固定使用選定的 `iPhone 17 dev` UUID；Android 不再使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
-- 「重新啟動」會停掉既有 port 上的服務，並用同一組 port 重新開啟。
+- 「重新啟動」先結束舊服務（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
 - 「停止」依目前記錄的 port 停止服務，成功後清掉該專案的執行狀態與 `.dev/ports.json` 內容。
 - 「開網頁」只在 frontend 已執行時開啟實際 `http://localhost:<port>`，不自動啟動服務。
 - 「開桌面」啟動 desktop 服務與它 `needs` 的服務。
@@ -120,7 +122,7 @@
 - 字串長度、服務數量、環境變數數量與輸出記錄都需要有上限。
 - 第一次執行，以及內容變更後第一次執行，必須跳出原生對話框列出所有指令；預設按鈕是「拒絕」。
 - 確認過的內容雜湊只存在本機，不進備份；還原備份後需重新確認。
-- port 在按下啟動按鈕當下向作業系統取得，同一批不得重複；服務執行中與重新啟動時沿用原 port；停止後清除記錄，下次啟動可能取得不同 port。
+- 動態 port 在按下啟動按鈕當下向作業系統取得，避開固定 port 與留給手動啟動的 5173、5174（`src/shared/reserved-ports.ts`），且同一批不得重複；GitNRun 自己的 dev server 也撇除這兩個號碼；固定 port 依描述檔配置。重新啟動時沿用原設定，停止後清除執行記錄。
 - 實際網址顯示在專案列，也寫入該專案 `.dev/ports.json` 作為當次提示；它不是穩定設定檔，使用前仍要確認服務存活。
 - 停止功能以目前記錄的 port 查找並終止監聽行程；若服務沒有可偵測 port，可能需要使用者在 iTerm2 分頁中手動停止。
 

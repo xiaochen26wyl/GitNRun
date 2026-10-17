@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { detectFramework, type FrameworkFs } from "@main/run/framework";
+import { FLUTTER_IOS_RUN_SCRIPT } from "@main/run/manifest";
 
 const fsOf = (files: Record<string, string>): FrameworkFs => ({
   readText: async (path) => files[path] ?? null,
@@ -39,7 +40,7 @@ describe("detectFramework", () => {
   });
 
   it("recognizes Flutter from the command", async () => {
-    assert.equal(await detectFramework("/work/app", spec(["flutter", "run", "-d", "iPhone"]), fsOf({})), "Flutter");
+    assert.equal(await detectFramework("/work/app", spec(["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT]), fsOf({})), "Flutter");
   });
 
   it("resolves --filter to the workspace package", async () => {

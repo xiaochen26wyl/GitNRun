@@ -14,7 +14,7 @@ GitNRun 是本機優先的 GitHub 推送監視與開發啟動工具。所有資�
 | 規則引擎 | 依分支、檔案、推送者、時間等條件觸發通知、Webhook、git、自訂 shell 或 AI 動作 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明；每個專案預設需手動允許 |
 | 一鍵終端機 | 將資料夾映射到常用指令，快速在終端機開啟並執行 |
-| 專案啟動 | 以 `.gitnrun/run.json` 描述前端、後端、桌面服務，一鍵配置 port 並在 iTerm2 分頁啟動；每個專案有 README 按鈕可直接開啟 README.md；依資料夾名稱分成「開源Free、SAAS、創作者宇宙、自己用、不知道什麼時候才完成」5 個頁籤，不在分組表內的專案出現在「其他」頁籤 |
+| 專案啟動 | 以 `.gitnrun/run.json` 描述前端、後端、桌面服務，可指定 `fixedPort` 或動態配置 port，再於 iTerm2 分頁啟動；每個專案有 README 按鈕可直接開啟 README.md；依資料夾名稱分成「開源Free、SAAS、創作者宇宙、自己用、遊戲需要美術」5 個頁籤，不在分組表內的專案出現在「其他」頁籤 |
 
 ## 安裝
 
@@ -40,6 +40,10 @@ pnpm build && pnpm smoke:build
 ```
 
 SQLite 使用 Node/Electron 內建的 `node:sqlite`，不需要額外編譯原生模組。
+
+## 本機環境檔
+
+GitNRun 本身目前不需要專案根目錄環境檔；GitHub、AI、通知等金鑰由 App 的本機加密保險庫管理。GitNRun 啟動的其他專案若有 dev／Debug 通關密碼，密碼必須留在該專案的 `.env`、`.env.local`、`.env.development`、`.env.development.local` 或 `.dev.vars`，GitNRun 只保存相對檔案路徑與鍵名，不保存密碼值。所有實際環境檔都必須由各專案的 `.gitignore` 排除。
 
 ## 架構
 
@@ -107,7 +111,7 @@ SQLite 使用 Node/Electron 內建的 `node:sqlite`，不需要額外編譯原�
 | 專案 | 底色 | 文字 | 來源 |
 |---|---|---|---|
 | toBloom | `#000000` | `#FFD93D` | toBloom README 的 Canvas 畫布、Ring Yellow 點綴黃 |
-| fictionPurr、mahoPurr-Catalyst、translationService | `#FB7185` | `#FFFFFF` | fictionPurr README 的 Secondary 次色（同一品牌） |
+| fictionPurr、mahoPurr-Catalyst、translationService | `#FFFFFF` | `#000000` | 使用者指定白底黑字，不用粉色；外框 `#000000`（白色色條在白底頁面上靠細框看出邊界） |
 | xiaochenStudio | `#0066CC` | `#FFFFFF` | fictionPurr README 的 Primary 主色 |
 | Usage-Pulse | `#4C1D95` | `#FFFFFF` | 使用者指定深紫色，色碼為建議值 |
 | yumeAegis | `#EA580C` | `#FFFFFF` | 使用者指定橘色，色碼為建議值 |

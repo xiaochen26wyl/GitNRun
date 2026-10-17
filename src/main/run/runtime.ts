@@ -9,8 +9,11 @@ import { detectAvailability, run as execForResult } from "@main/launcher/runtime
 import { buildItermCloseArgs, buildItermTabsArgs } from "@main/launcher/osascript";
 import { native } from "@main/native/bridge";
 import { detectFramework, type FrameworkFs } from "@main/run/framework";
-import { createRunHandlers, type ConfirmCommandsRequest, type RunHandlers } from "@main/run/handlers";
+import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest, type RunHandlers } from "@main/run/handlers";
+import { detectInstaller } from "@main/run/installer";
 import { loadManifest } from "@main/run/manifest";
+import { fsPasscodeSource } from "@main/run/passcode-source";
+import { createSystemPortSweep } from "@main/run/port-sweep";
 import { allocatePorts, probePort, writePortsFile } from "@main/run/ports";
 import type { Vault } from "@main/vault/vault";
 
@@ -28,10 +31,25 @@ const confirmCommands = async (request: ConfirmCommandsRequest): Promise<boolean
   const listing = request.lines.map((line) => `${line.service}：${line.command}`).join("\n");
   const response = await native().confirm({
     kind: "warning",
-    title: "devRun",
+    title: "GitNRun",
     message: request.changed ? `「${request.label}」的啟動指令有變動，要執行嗎？` : `第一次執行「${request.label}」的啟動指令，要執行嗎？`,
     detail: `GitNRun 會控制 iTerm2 開啟分頁，並在指定資料夾執行下列指令。\n\n資料夾：${request.folder}\n\n將執行（{port} 等佔位會換成實際的 port）：\n${listing}\n\n指令會從專案設定或 package.json scripts 讀出；第一次執行或內容變更後都需要你確認。確認後，只要內容沒有再變動就不會再問。`,
     buttons: ["拒絕", "允許"],
+    defaultId: 0,
+    cancelId: 0
+  });
+  return response === 1;
+};
+
+const confirmReinstall = async (request: ConfirmReinstallRequest): Promise<boolean> => {
+  native().bounceDock();
+  const listing = request.items.map((item) => `${item.dir}：${item.command}`).join("\n");
+  const response = await native().confirm({
+    kind: "warning",
+    title: "GitNRun",
+    message: `要刪除「${request.label}」的 node_modules 並重裝依賴嗎？`,
+    detail: `GitNRun 會控制 iTerm2 開啟分頁，在下列資料夾刪除 node_modules 後重新安裝依賴。\n\n專案：${request.folder}\n\n將執行（資料夾：指令）：\n${listing}\n\nlock 檔會保留。安裝時會執行 package.json 裡的安裝相關腳本（例如 postinstall）。每次重裝都會詢問。`,
+    buttons: ["取消", "刪除並重裝"],
     defaultId: 0,
     cancelId: 0
   });
@@ -115,12 +133,13 @@ export const simulatorShutdownCommand = (platform: MobilePlatform): string => {
 const closeSimulator = (platform: MobilePlatform): Promise<{ code: number; stderr: string }> =>
   execForResult(SHELL, ["-lc", simulatorShutdownCommand(platform)]);
 
-export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; copySecret: (secret: string) => void }): RunHandlers =>
+export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; copySecret: (secret: string) => Promise<void> }): RunHandlers =>
   createRunHandlers({
     db: deps.db,
     logger: deps.logger,
     vault: deps.vault,
     copySecret: deps.copySecret,
+    passcodeSource: fsPasscodeSource,
     loadManifest: (folder) => loadManifest(folder),
     probe: probePort,
     allocatePorts,
@@ -133,6 +152,9 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     closeSimulator,
     closeTabs: (sessionNames) => execForResult(OSASCRIPT, buildItermCloseArgs(sessionNames)),
     confirmCommands,
+    confirmReinstall,
+    detectInstaller: (dir, inherited) => detectInstaller(dir, inherited),
+    portSweep: createSystemPortSweep(),
     openUrl: async (url) => {
       if (!LOCAL_URL.test(url)) {
         throw new Error("不允許開啟非本機網址");

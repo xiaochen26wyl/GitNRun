@@ -8,7 +8,7 @@ import { createAppSettingsHandlers } from "@main/app-settings";
 import { registerAppSettingsIpc } from "@main/app-settings-ipc";
 import { registerBrandIpc } from "@main/brand/ipc";
 import { createBrandRuntime } from "@main/brand/runtime";
-import { copySecretToClipboard } from "@main/clipboard-secret";
+import { copySecretToClipboard, copySecretToClipboardChecked } from "@main/clipboard-secret";
 import { closeDataLayer, getBackupDir, initDataLayer } from "@main/data-layer";
 import { markInterruptedExecutions } from "@main/db/rule-executions-repo";
 import { readDocumentRoot } from "@main/documents/handlers";
@@ -124,7 +124,7 @@ export const startCore = (options: CoreOptions): Core => {
   registerAppIpc(createAppHandlers({ db, monitor, git, log: (entry) => log.log(entry), onConfigChanged }));
   registerRulesIpc(createRulesHandlers({ db, engine, vault, onConfigChanged }));
   registerLauncherIpc(launcher.handlers);
-  registerRunIpc(createRunRuntime({ db, logger: log, vault, copySecret: copySecretToClipboard }));
+  registerRunIpc(createRunRuntime({ db, logger: log, vault, copySecret: copySecretToClipboardChecked }));
   registerDocumentIpc(createDocumentRuntime({ db, now: Date.now, onConfigChanged }));
   registerBrandIpc(createBrandRuntime({ db }));
   registerGitLiteIpc(

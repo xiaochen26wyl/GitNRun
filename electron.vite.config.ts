@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
+import { resolveDevPort } from "./scripts/dev-port";
 
 // 打包後的頁面使用嚴格 CSP（禁止任何對外連線，所有網路只在主程序發生）。
 // dev server 需要 HMR 的 inline script 與 websocket，所以只在 `serve` 期間放寬 meta，
@@ -15,6 +16,14 @@ const devCspPlugin = (): Plugin => ({
       (_match, open: string, _policy: string, close: string) =>
         `${open}default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'${close}`
     )
+});
+
+// dev server 的 port：有 PORT 就用（專案啟動頁會傳入），沒給就從 5173 往後找並撇除 5173、5174，
+// 避免占住其他專案固定使用的號碼（規則見 scripts/dev-port.ts）。
+const devPortPlugin = (): Plugin => ({
+  name: "gitnrun-dev-port",
+  apply: "serve",
+  config: async () => ({ server: { port: await resolveDevPort() } })
 });
 
 export default defineConfig({
@@ -54,10 +63,9 @@ export default defineConfig({
   },
   renderer: {
     root: ".",
-    plugins: [react(), devCspPlugin()],
-    // port 由啟動端決定（專案啟動頁會以 PORT 傳入）；沒給就用 Vite 預設，被占用時自動往後找。
+    plugins: [react(), devCspPlugin(), devPortPlugin()],
+    // port 由 devPortPlugin 決定；仍不開 strictPort，被搶走時 Vite 會往後找。
     server: {
-      port: Number.isInteger(Number(process.env.PORT)) && Number(process.env.PORT) > 0 ? Number(process.env.PORT) : undefined,
       strictPort: false
     },
     build: {

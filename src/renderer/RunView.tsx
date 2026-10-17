@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { errorMessage } from "@shared/format";
 import { useProjectHead, type ProjectHeadAttrs } from "./hooks";
 import {
@@ -7,9 +7,12 @@ import {
   displayServiceName,
   groupRunServices,
   mobilePlatformOf,
+  passcodeProblem,
+  passcodeStateText,
   planMobileStop,
   summarizeMobileState,
   type MobilePlatform,
+  type PasscodeBinding,
   type RunAction,
   type RunButtonState,
   type RunOverview,
@@ -17,7 +20,22 @@ import {
   type RunServiceView,
   type RunTargetView
 } from "@shared/run";
-import { countUngroupedRunTargets, targetsOfRunGroup, type RunGroup } from "@shared/run-groups";
+import { countUngroupedRunTargets, type RunGroup } from "@shared/run-groups";
+import {
+  EMPTY_RUN_ORDER,
+  buildRunOrderEntries,
+  commitRunOrder,
+  entriesOfTargets,
+  orderedRunServiceRows,
+  orderedRunTargets,
+  runSortModeOf,
+  sortByOpenIssues,
+  type RunOrder
+} from "@shared/run-order";
+import { formatGroupIssueTotal, isIssueSkippedGroup, summarizeIssueGroup } from "@shared/git-lite";
+import { ChangeBadge } from "./ChangeBadge";
+import { IssueSection, useIssueDisplayPref, useIssueFeed } from "./IssueSection";
+import { RunOrderEditor, RunSortSwitch, useRunOrderPref, useRunSortModePref } from "./RunOrderEditor";
 
 const REFRESH_MS = 4_000;
 const COPY_FLASH_MS = 1_500;
@@ -111,6 +129,173 @@ const CommandButton = ({ command, label = "指令" }: { command: string; label?:
   );
 };
 
+/** 專案路徑不直接攤在卡片上，點一下複製即可；結果用按鈕文字短暫提示，不展開浮層。 */
+const PathCopyButton = ({ path }: { path: string }) => {
+  const [copy, setCopy] = useState<CopyState>("idle");
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const flash = (next: CopyState): void => {
+    setCopy(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopy("idle"), COPY_FLASH_MS);
+  };
+
+  const onClick = (): void => {
+    // 包一層 Promise：剪貼簿不可用時同步丟出的錯誤也會走到失敗分支。
+    void Promise.resolve()
+      .then(() => navigator.clipboard.writeText(path))
+      .then(
+        () => flash("copied"),
+        () => flash("failed")
+      );
+  };
+
+  return (
+    <button type="button" className="ghost" onClick={onClick}>
+      {copy === "copied" ? "已複製" : copy === "failed" ? "複製失敗" : "複製路徑"}
+    </button>
+  );
+};
+
+/** Debug 密碼的來源與設定：密碼只留在專案的環境檔，GitNRun 只讀取；這裡只管「讀哪個檔的哪個鍵」。 */
+const DebugPasswordActions = ({
+  target,
+  onChanged,
+  onMessage
+}: {
+  target: RunTargetView;
+  onChanged: () => void;
+  onMessage: (ok: boolean, text: string) => void;
+}) => {
+  const source = target.passcodeSource;
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [file, setFile] = useState("");
+  const [key, setKey] = useState("");
+  const canCopy = source.state === "ok";
+  const canOpenFile = source.state !== "unbound" && source.state !== "no-file" && source.state !== "unsafe";
+
+  /** 各動作共用：忙碌旗標、錯誤顯示，完成後刷新總覽。 */
+  const perform = async (work: () => Promise<void>, done?: string): Promise<void> => {
+    setBusy(true);
+    setError("");
+    try {
+      await work();
+      onChanged();
+      if (done !== undefined) onMessage(true, `${target.label}：${done}`);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await window.gitNRun.copyRunPasscode(target.id);
+      onMessage(true, `${target.label}：已複製 Debug 密碼，剪貼簿會在 60 秒後清除`);
+    } catch (cause) {
+      onMessage(false, `${target.label}：${errorMessage(cause)}`);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const bind = (binding: PasscodeBinding): Promise<void> =>
+    perform(async () => {
+      await window.gitNRun.bindRunPasscode(target.id, binding);
+      setFile("");
+      setKey("");
+    }, `已指定 Debug 密碼來源：${binding.file} 的 ${binding.key}`);
+
+  /** 取消設定成功才收起面板；失敗時維持展開，錯誤訊息才看得到。 */
+  const unbind = (): Promise<void> =>
+    perform(async () => {
+      await window.gitNRun.unbindRunPasscode(target.id);
+      setOpen(false);
+    }, "已取消設定 Debug 密碼");
+
+  return (
+    <div className="run-password-actions">
+      <button type="button" disabled={!canCopy || busy} title={canCopy ? undefined : passcodeProblem(source.state, source.binding)} onClick={() => void copy()}>
+        複製 Debug 密碼
+      </button>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+        設定密碼
+      </button>
+      {open ? (
+        <div className="run-password-panel">
+          <p className="run-password-status">
+            {source.binding === null ? (
+              "尚未指定密碼來源"
+            ) : (
+              <>
+                專案環境檔 · <span className="mono">{source.binding.file}</span> · <span className="mono">{source.binding.key}</span> ·{" "}
+                {source.state === "ok" ? `已讀到${source.hint === "" ? "" : `，末四碼 ${source.hint}`}` : <span className="warn">{passcodeStateText(source.state)}</span>}
+              </>
+            )}
+          </p>
+          {source.binding !== null ? (
+            <div className="run-password-row">
+              <button
+                type="button"
+                disabled={busy || !canOpenFile}
+                title={canOpenFile ? undefined : passcodeStateText(source.state)}
+                onClick={() => void perform(() => window.gitNRun.openRunPasscodeFile(target.id))}
+              >
+                開啟環境檔
+              </button>
+              <button type="button" disabled={busy} onClick={() => onChanged()}>
+                重新檢查
+              </button>
+              <button type="button" disabled={busy} onClick={() => void unbind()}>
+                取消設定密碼
+              </button>
+              <span className="muted">要改密碼，請直接編輯這個環境檔；每次複製都會重新讀取。</span>
+            </div>
+          ) : (
+            <>
+              {source.candidates.length > 0 ? (
+                <div className="run-password-row">
+                  <span className="muted">偵測到：</span>
+                  {source.candidates.map((candidate) => (
+                    <button key={`${candidate.file}:${candidate.key}`} type="button" disabled={busy} onClick={() => void bind(candidate)}>
+                      使用 {candidate.file} 的 {candidate.key}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <form
+                className="run-password-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void bind({ file: file.trim(), key: key.trim() });
+                }}
+              >
+                <input value={file} placeholder="環境檔，例如 .env" aria-label={`${target.label} 環境檔路徑`} autoComplete="off" spellCheck={false} onChange={(event) => setFile(event.target.value)} />
+                <input value={key} placeholder="鍵名，例如 DEBUG_PASSWORD" aria-label={`${target.label} 密碼鍵名`} autoComplete="off" spellCheck={false} onChange={(event) => setKey(event.target.value)} />
+                <button type="submit" disabled={busy || file.trim() === "" || key.trim() === ""}>
+                  指定環境檔
+                </button>
+              </form>
+            </>
+          )}
+          {error ? (
+            <span className="warn" role="alert">
+              {error}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const ServiceRow = ({
   target,
   service,
@@ -136,6 +321,7 @@ const ServiceRow = ({
         <span className="badge run-framework">{serviceBadgeLabel(service)}</span>
         <span className="muted">{STATE_LABEL[service.state]}</span>
         {service.url ? <span className="mono">{service.url}</span> : null}
+        {!service.url && service.fixedPort !== null ? <span className="mono muted">固定 http://localhost:{service.fixedPort}</span> : null}
       </div>
       <div className="row-actions run-service-actions">
         <ActionButton label={startLabel(service)} state={service.buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
@@ -210,12 +396,25 @@ const TargetRow = ({
   target,
   busyKey,
   headProps,
-  onAction
+  onAction,
+  onPasswordChanged,
+  onPasswordMessage,
+  order,
+  changes,
+  issues
 }: {
   target: RunTargetView;
   busyKey: string;
   headProps: (path: string) => ProjectHeadAttrs;
   onAction: (action: RunAction | readonly RunAction[]) => void;
+  onPasswordChanged: () => void;
+  onPasswordMessage: (ok: boolean, text: string) => void;
+  /** 你固定下來的手動排序；服務列依它排列。 */
+  order: RunOrder;
+  /** 標題下方的變更檔案數；讀不到時不畫。 */
+  changes: ReactNode;
+  /** 服務列表下方的 GitHub issues 區塊；關閉顯示時為 null。 */
+  issues: ReactNode;
 }) => (
   <li className="project-row run-row">
     <div {...headProps(target.folder)}>
@@ -227,6 +426,7 @@ const TargetRow = ({
           busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "readme" })}
           onClick={() => onAction({ scope: "project", action: "readme" })}
         />
+        <DebugPasswordActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         {target.buttons.stop.enabled ? (
           <ActionButton
             label="結束全部"
@@ -235,8 +435,15 @@ const TargetRow = ({
             onClick={() => onAction({ scope: "project", action: "stop" })}
           />
         ) : null}
+        <ActionButton
+          label="重裝依賴"
+          state={target.reinstall}
+          busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "reinstall" })}
+          onClick={() => onAction({ scope: "project", action: "reinstall" })}
+        />
       </div>
-      <span className="muted mono">{target.folder}</span>
+      {changes}
+      <PathCopyButton path={target.folder} />
       {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
     </div>
 
@@ -253,7 +460,7 @@ const TargetRow = ({
 
     {target.services.length > 0 ? (
       <ul className="plain-list run-services">
-        {groupRunServices(target.services).map((row) =>
+        {orderedRunServiceRows(target.folder, groupRunServices(target.services), order).map((row) =>
           row.kind === "mobile" ? (
             <MobileRow key={row.services[0]?.service.name ?? row.title} target={target} title={row.title} entries={row.services} busyKey={busyKey} onAction={onAction} />
           ) : (
@@ -262,19 +469,51 @@ const TargetRow = ({
         )}
       </ul>
     ) : null}
+    {issues}
   </li>
 );
 
 /** group：目前頁籤的分組，只顯示屬於它的專案；onUngroupedCount：每次刷新後回報對不到任何分組的專案數，讓外層決定要不要顯示「其他」頁籤。 */
-export const RunView = ({ group, onUngroupedCount }: { group: RunGroup; onUngroupedCount: (count: number) => void }) => {
+export const RunView = ({
+  group,
+  onUngroupedCount,
+  onOpenSettings
+}: {
+  group: RunGroup;
+  onUngroupedCount: (count: number) => void;
+  onOpenSettings: () => void;
+}) => {
   const [overview, setOverview] = useState<RunOverview | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [error, setError] = useState("");
   const [busyKey, setBusyKey] = useState("");
   const headProps = useProjectHead();
   const allTargets = overview?.targets ?? [];
-  const targets = targetsOfRunGroup(allTargets, group.id);
+  const [savedOrder, saveOrder] = useRunOrderPref();
+  const [sortModes, saveSortMode] = useRunSortModePref();
+  const [reordering, setReordering] = useState(false);
+  // 開源、自己用等分組不需要 issue：整個功能（區塊、摘要、開關、排序、GitHub 請求）都不啟用。
+  const issuesAllowed = !isIssueSkippedGroup(group.id);
+  const sortMode = issuesAllowed ? runSortModeOf(sortModes, group.id) : "manual";
+  const [issuePref, setIssuePref] = useIssueDisplayPref();
+  const showIssues = issuesAllowed && issuePref;
+  // 依 issue 數量排序也要有 issue 資料，所以就算不顯示 issue 區塊也要讀。
+  const { feed: issueFeed, gitFeed, refresh: refreshIssues } = useIssueFeed(showIssues || sortMode === "issues");
+  // issue 數量排序疊在手動順序上：同數量沿用手動順序，資料還沒到位時就是手動順序。
+  const manualTargets = orderedRunTargets(allTargets, group.id, savedOrder);
+  const targets = sortMode === "issues" ? sortByOpenIssues(manualTargets, issueFeed) : manualTargets;
+  const sortNote =
+    sortMode !== "issues"
+      ? null
+      : issueFeed.status === "loading"
+        ? "讀取 issue 數量中，先依手動順序"
+        : issueFeed.status === "failed"
+          ? "讀不到 issue 數量，先依手動順序"
+          : null;
   const hasTargets = targets.length > 0;
+  const canReorder = targets.length > 1 || targets.some((target) => groupRunServices(target.services).length > 1);
+  const defaultOrderEntries = reordering ? buildRunOrderEntries(allTargets, group.id, EMPTY_RUN_ORDER) : [];
+  const issueSummary = summarizeIssueGroup(issueFeed, targets.map((target) => target.folder));
 
   const refresh = useCallback(() => {
     void window.gitNRun
@@ -320,21 +559,21 @@ export const RunView = ({ group, onUngroupedCount }: { group: RunGroup; onUngrou
 
   return (
     <section>
-      <div className="run-hero">
-        <h1>{group.label}</h1>
-        <p className="muted">
-          {group.id === "other"
-            ? "這些專案的資料夾名稱不在分組表裡，所以先放在這裡；選一個專案，按一下跑前後端。"
-            : "選一個專案，按一下跑前後端；GitNRun 會從 package.json scripts 自動找出可啟動服務。"}
-        </p>
-      </div>
-      <p className="muted">
-        按下按鈕才會啟動；port 會在當下配置。用完按「結束」會停掉服務並關掉對應的 iTerm2 分頁，釋放電腦資源；結束手機服務時也會關掉 iOS 或 Android 模擬器。
-        {overview && !overview.iterm ? <span className="warn"> 找不到 iTerm2，啟動類按鈕無法使用。</span> : null}
-      </p>
+      {(hasTargets && showIssues) || group.id === "other" ? (
+        <div className="run-hero">
+          {hasTargets && showIssues ? (
+            <div className="run-chips">
+              <span className="badge">{targets.length} 個專案</span>
+              {issueSummary.openIssues ? <span className="badge issue-chip">{formatGroupIssueTotal(issueSummary.openIssues)}</span> : null}
+            </div>
+          ) : null}
+          {group.id === "other" ? <p className="muted">這些專案的資料夾名稱不在分組表裡，所以先放在這裡。</p> : null}
+        </div>
+      ) : null}
+      {overview && !overview.iterm ? <p className="warn">找不到 iTerm2，啟動類按鈕無法使用。</p> : null}
 
       {overview && allTargets.length === 0 ? (
-        <p className="empty muted">沒有可啟動的專案。專案只要在 Git / GitHub 頁籤設定本機路徑，就會自動出現在這裡。</p>
+        <p className="empty muted">沒有可啟動的專案。把專案資料夾放進個人專案根目錄後，就會自動出現在這裡。</p>
       ) : null}
       {overview && allTargets.length > 0 && !hasTargets ? (
         <p className="empty muted">
@@ -348,13 +587,36 @@ export const RunView = ({ group, onUngroupedCount }: { group: RunGroup; onUngrou
       {overview === null ? <p className="muted">載入中…</p> : null}
       {hasTargets ? (
         <div className="section-head run-list-head">
-          <div>
-            <h2>專案清單</h2>
-            <p className="muted">每個專案會自動顯示 package.json 裡可執行的本機服務。</p>
+          <div className="run-list-tools">
+            {issuesAllowed && !reordering ? <RunSortSwitch mode={sortMode} onChange={(mode) => saveSortMode(group.id, mode)} note={sortNote} /> : null}
+            {canReorder && !reordering ? (
+              <button type="button" className="ghost" onClick={() => setReordering(true)}>
+                調整順序
+              </button>
+            ) : null}
+            {issuesAllowed ? (
+              <label className="inline-check">
+                <input type="checkbox" checked={issuePref} onChange={(event) => setIssuePref(event.target.checked)} />
+                在專案下方顯示 GitHub issues
+              </label>
+            ) : null}
           </div>
         </div>
       ) : null}
-      <ul className="project-list">
+      {reordering ? (
+        <RunOrderEditor
+          initial={entriesOfTargets(targets, savedOrder)}
+          defaults={defaultOrderEntries}
+          projectsLocked={sortMode === "issues"}
+          onSave={(draft) => {
+            saveOrder(commitRunOrder(savedOrder, group.id, draft, defaultOrderEntries, { projects: sortMode !== "issues" }));
+            setReordering(false);
+          }}
+          onCancel={() => setReordering(false)}
+        />
+      ) : null}
+      {/* 調整順序時只藏起來、不卸載，讓密碼表單與 issues 區塊的狀態不會被洗掉。 */}
+      <ul className="project-list" hidden={reordering}>
         {targets.map((target) => (
           <TargetRow
             key={target.id}
@@ -362,6 +624,18 @@ export const RunView = ({ group, onUngroupedCount }: { group: RunGroup; onUngrou
             busyKey={busyKey}
             headProps={headProps}
             onAction={(action) => void act(target, action)}
+            onPasswordChanged={refresh}
+            onPasswordMessage={(ok, text) => {
+              setError("");
+              setMessage({ ok, text });
+            }}
+            order={savedOrder}
+            changes={<ChangeBadge feed={gitFeed} folder={target.folder} />}
+            issues={
+              showIssues ? (
+                <IssueSection feed={issueFeed} folder={target.folder} label={target.label} onRetry={refreshIssues} onOpenSettings={onOpenSettings} />
+              ) : null
+            }
           />
         ))}
       </ul>

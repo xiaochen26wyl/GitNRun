@@ -1,10 +1,20 @@
 import { EVENT_QUERY_MAX_LIMIT, type EventQuery } from "@shared/events";
 import { validateDocumentShortcutInput, type DocumentShortcutInput } from "@shared/documents";
+import type { GitLiteOverviewOptions } from "@shared/git-lite";
 import type { LauncherSettingsPatch } from "@shared/ipc";
 import { IPC, type IpcChannel } from "@shared/ipc";
 import { LOG_CATEGORIES, LOG_LEVELS, LOG_QUERY_MAX_LIMIT, type LogQuery } from "@shared/logs";
 import { validateProjectInput, type NormalizedProjectInput } from "@shared/projects";
-import { RUN_PROJECT_ACTIONS, RUN_SERVICE_ACTIONS, isRunServiceName, isRunTargetId, normalizeRunAccount, type RunAction } from "@shared/run";
+import {
+  RUN_PROJECT_ACTIONS,
+  RUN_SERVICE_ACTIONS,
+  isRunServiceName,
+  isRunTargetId,
+  normalizePasscodeBinding,
+  normalizeRunAccount,
+  type PasscodeBinding,
+  type RunAction
+} from "@shared/run";
 import { MAX_SECRET_LENGTH, isMaskedPlaceholder, isSecretName } from "@shared/secrets";
 import type { StartWorkInput } from "@shared/start-work";
 
@@ -356,10 +366,32 @@ export const asRunAccountArgs = (args: readonly unknown[]): [string, string] | n
   return account === null ? null : [args[0], account];
 };
 
+/** 目標識別加 Debug 密碼的來源（環境檔路徑與鍵名）；多餘欄位、不合法的檔名或鍵名一律拒絕。 */
+export const asRunPasscodeBindingArgs = (args: readonly unknown[]): [string, PasscodeBinding] | null => {
+  if (args.length !== 2 || !isRunTargetId(args[0]) || !isPlainObject(args[1]) || !hasOnlyKeys(args[1], ["file", "key"])) {
+    return null;
+  }
+  const binding = normalizePasscodeBinding(args[1]);
+  return binding === null ? null : [args[0], binding];
+};
+
 /** 專案根目錄：空字串代表關閉自動掃描；是否為存在的資料夾由處理器檢查。 */
 export const asDocumentRootArgs = (args: readonly unknown[]): [string] | null => {
   const path = args.length === 1 ? asBoundedString(args[0], { allowEmpty: true }) : null;
   return path === null ? null : [path.trim()];
+};
+
+/** git-lite 總覽：不帶參數，或只帶 { issues: boolean }（多一個鍵、型別不對都拒絕）。 */
+export const asGitLiteOverviewArgs = (args: readonly unknown[]): [] | [GitLiteOverviewOptions] | null => {
+  if (args.length === 0) {
+    return [];
+  }
+  const [options] = args;
+  if (args.length !== 1 || !isPlainObject(options)) {
+    return null;
+  }
+  const keys = Object.keys(options);
+  return keys.length === 1 && keys[0] === "issues" && typeof options.issues === "boolean" ? [{ issues: options.issues }] : null;
 };
 
 export const asDocumentShortcutArgs =(args: readonly unknown[]): [DocumentShortcutInput] | null => {
@@ -414,9 +446,33 @@ export const asClipboardArgs = (args: readonly unknown[]): [string] | null => {
 
 const EXTERNAL_LINK_HOST = "github.com";
 const EXTERNAL_LINK_PATH_PREFIX = "/settings/";
+/** 專案頁的 issue 清單（/owner/repo/issues）與單一 issue（/owner/repo/issues/123）。 */
+const ISSUES_PATH = /^\/([^/]+)\/([^/]+)\/issues(?:\/\d{1,10})?$/;
+const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const GITHUB_REPO = /^[A-Za-z0-9._-]{1,100}$/;
+/** 原始字串裡的 . / .. 片段（含百分比編碼）：URL 解析會把它們折掉，所以要在解析前先擋。 */
+const DOT_SEGMENT = /(^|[/\\])(\.|%2e){1,2}($|[/\\?#])/i;
+
+const isIssuesUrl = (text: string, url: URL): boolean => {
+  const match = ISSUES_PATH.exec(url.pathname);
+  const owner = match?.[1];
+  const repo = match?.[2];
+  return (
+    owner !== undefined &&
+    repo !== undefined &&
+    GITHUB_OWNER.test(owner) &&
+    GITHUB_REPO.test(repo) &&
+    repo !== "." &&
+    repo !== ".." &&
+    url.search === "" &&
+    url.hash === "" &&
+    !DOT_SEGMENT.test(text)
+  );
+};
 
 /**
- * 可由渲染層要求用系統瀏覽器開啟的網址：只收 https://github.com/settings/ 底下的頁面。
+ * 可由渲染層要求用系統瀏覽器開啟的網址：只收 https://github.com/settings/ 底下的頁面，
+ * 以及 https://github.com/{owner}/{repo}/issues 與 .../issues/{編號}（不得帶 query、hash）。
  * 先交給 URL 解析再比對（../、反斜線、帳密、埠號等繞法都會在解析後現形），回傳正規化後的網址。
  */
 export const asExternalUrl = (value: unknown): string | null => {
@@ -431,7 +487,8 @@ export const asExternalUrl = (value: unknown): string | null => {
   if (url.protocol !== "https:" || url.hostname !== EXTERNAL_LINK_HOST || url.port !== "" || url.username !== "" || url.password !== "") {
     return null;
   }
-  return url.pathname.startsWith(EXTERNAL_LINK_PATH_PREFIX) ? url.href : null;
+  if (url.pathname.startsWith(EXTERNAL_LINK_PATH_PREFIX)) return url.href;
+  return isIssuesUrl(text, url) ? url.href : null;
 };
 
 export const asExternalLinkArgs = (args: readonly unknown[]): [string] | null => {

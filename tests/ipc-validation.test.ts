@@ -10,9 +10,11 @@ import {
   asEnum,
   asExternalLinkArgs,
   asExternalUrl,
+  asGitLiteOverviewArgs,
   asNoArgs,
   asRunAccountArgs,
   asRunActionArgs,
+  asRunPasscodeBindingArgs,
   asRunTargetIdArgs,
   asSafeInteger,
   isKnownChannel,
@@ -109,7 +111,7 @@ describe("runValidated", () => {
 
 describe("run page arguments", () => {
   it("declares the run channels", () => {
-    for (const channel of ["run:overview", "run:action", "run:add-folder", "run:remove-folder", "run:set-account", "run:copy-passcode"]) {
+    for (const channel of ["run:overview", "run:action", "run:add-folder", "run:remove-folder", "run:set-account", "run:copy-passcode", "run:scan-ports", "run:release-ports"]) {
       assert.equal(isKnownChannel(channel), true, channel);
     }
   });
@@ -117,6 +119,7 @@ describe("run page arguments", () => {
   it("accepts only a target id plus a known action object", () => {
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "stop" }]), ["p:3", { scope: "project", action: "stop" }]);
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "readme" }]), ["p:3", { scope: "project", action: "readme" }]);
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "reinstall" }]), ["p:3", { scope: "project", action: "reinstall" }]);
     assert.deepEqual(asRunActionArgs(["f:12", { scope: "service", service: "web", action: "web" }]), [
       "f:12",
       { scope: "service", service: "web", action: "web" }
@@ -137,6 +140,8 @@ describe("run page arguments", () => {
       ["p:3", { scope: "project", action: "start" }],
       ["p:3", { scope: "project", action: "stop", service: "web" }],
       ["p:3", { scope: "project", action: "readme", path: "/etc/passwd" }],
+      ["p:3", { scope: "project", action: "reinstall", command: "rm -rf /" }],
+      ["p:3", { scope: "service", service: "web", action: "reinstall" }],
       ["p:3", { scope: "service", service: "web", action: "readme" }],
       ["p:3", { scope: "service", service: "Web", action: "start" }],
       ["p:3", { scope: "service", service: "web", action: "desktop" }],
@@ -187,6 +192,35 @@ describe("run page arguments", () => {
   });
 });
 
+describe("asRunPasscodeBindingArgs", () => {
+  it("accepts a target id with a safe environment file and key", () => {
+    assert.deepEqual(asRunPasscodeBindingArgs(["p:3", { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" }]), ["p:3", { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" }]);
+    assert.deepEqual(asRunPasscodeBindingArgs(["f:123456789", { file: "apps/edge/.env.local", key: "DEBUG_PASSWORD" }]), ["f:123456789", { file: "apps/edge/.env.local", key: "DEBUG_PASSWORD" }]);
+  });
+
+  it("rejects unsafe paths, public keys, extra fields and the wrong shape", () => {
+    for (const args of [
+      [],
+      ["p:3"],
+      ["p:3", { file: ".env", key: "DEBUG_PASSWORD" }, "extra"],
+      ["x:3", { file: ".env", key: "DEBUG_PASSWORD" }],
+      ["p:3", null],
+      ["p:3", ".env"],
+      ["p:3", [".env", "DEBUG_PASSWORD"]],
+      ["p:3", { file: ".env" }],
+      ["p:3", { file: ".env", key: "DEBUG_PASSWORD", value: "secret" }],
+      ["p:3", { file: "/etc/.env", key: "DEBUG_PASSWORD" }],
+      ["p:3", { file: "../.env", key: "DEBUG_PASSWORD" }],
+      ["p:3", { file: "config.json", key: "DEBUG_PASSWORD" }],
+      ["p:3", { file: ".env", key: "debug_password" }],
+      ["p:3", { file: ".env", key: "NEXT_PUBLIC_DEBUG_PASSWORD" }],
+      ["p:3", { file: 42, key: "DEBUG_PASSWORD" }]
+    ]) {
+      assert.equal(asRunPasscodeBindingArgs(args), null, JSON.stringify(args));
+    }
+  });
+});
+
 describe("asDocumentOpenArgs", () => {
   it("accepts saved shortcut ids (positive) and auto-discovered README ids (negative)", () => {
     assert.deepEqual(asDocumentOpenArgs([1]), [1]);
@@ -211,6 +245,31 @@ describe("asDocumentRootArgs", () => {
   it("rejects non-strings, control characters, overlong paths and the wrong arity", () => {
     for (const args of [[], [null], [1], ["/a\u0000b"], ["x".repeat(MAX_IPC_STRING + 1)], ["/a", "/b"]]) {
       assert.equal(asDocumentRootArgs(args), null, JSON.stringify(args));
+    }
+  });
+});
+
+describe("asGitLiteOverviewArgs", () => {
+  it("accepts no argument, or exactly { issues: boolean }", () => {
+    assert.deepEqual(asGitLiteOverviewArgs([]), []);
+    assert.deepEqual(asGitLiteOverviewArgs([{ issues: false }]), [{ issues: false }]);
+    assert.deepEqual(asGitLiteOverviewArgs([{ issues: true }]), [{ issues: true }]);
+  });
+
+  it("rejects anything else, including extra keys and the wrong arity", () => {
+    for (const args of [
+      [undefined],
+      [null],
+      ["issues"],
+      [[true]],
+      [{}],
+      [{ issues: "no" }],
+      [{ issues: 0 }],
+      [{ issues: false, extra: 1 }],
+      [{ other: true }],
+      [{ issues: true }, { issues: true }]
+    ]) {
+      assert.equal(asGitLiteOverviewArgs(args), null, JSON.stringify(args));
     }
   });
 });
@@ -248,6 +307,51 @@ describe("asExternalUrl / asExternalLinkArgs", () => {
       "https://github.com/settings/../octocat",
       "https://github.com/settings/%2e%2e/octocat",
       "https://github.com/login/oauth/authorize"
+    ]) {
+      assert.equal(asExternalUrl(value), null, value);
+    }
+  });
+
+  it("accepts a repo's issue list and a single issue page", () => {
+    for (const url of [
+      "https://github.com/xiaochen26wyl/fictionPurr/issues",
+      "https://github.com/xiaochen26wyl/fictionPurr/issues/44",
+      "https://github.com/acme/widgets.js/issues/7",
+      "https://github.com/acme/my_repo-2/issues"
+    ]) {
+      assert.equal(asExternalUrl(url), url, url);
+      assert.deepEqual(asExternalLinkArgs([url]), [url], url);
+    }
+  });
+
+  it("rejects other repo pages, query strings, hashes, dot segments and malformed issue paths", () => {
+    for (const value of [
+      "https://github.com/acme/widgets",
+      "https://github.com/acme/widgets/pulls",
+      "https://github.com/acme/widgets/pull/7",
+      "https://github.com/acme/widgets/wiki",
+      "https://github.com/acme/widgets/issues/",
+      "https://github.com/acme/widgets/issues/7/comments",
+      "https://github.com/acme/widgets/issues/seven",
+      "https://github.com/acme/widgets/issues/12345678901",
+      "https://github.com/acme/widgets/issues?q=is%3Aopen",
+      "https://github.com/acme/widgets/issues/7#issuecomment-1",
+      "https://github.com/acme/widgets/issues#top",
+      "https://github.com/acme/widgets/../other/issues",
+      "https://github.com/acme/widgets/x/../issues",
+      "https://github.com/acme/widgets/%2e%2e/issues",
+      "https://github.com/acme/./widgets/issues",
+      "https://github.com/-acme/widgets/issues",
+      "https://github.com/acme/wid%67ets/issues",
+      "https://github.com/acme/../issues",
+      "https://github.com//widgets/issues",
+      "https://github.com/acme/widgets/issues/7\u0000",
+      `https://github.com/acme/${"r".repeat(101)}/issues`,
+      "https://github.com:8443/acme/widgets/issues",
+      "https://user:pw@github.com/acme/widgets/issues",
+      "http://github.com/acme/widgets/issues",
+      "https://evil.com/acme/widgets/issues",
+      "https://api.github.com/acme/widgets/issues"
     ]) {
       assert.equal(asExternalUrl(value), null, value);
     }

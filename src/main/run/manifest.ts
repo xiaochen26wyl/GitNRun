@@ -32,6 +32,26 @@ const isInside = (root: string, candidate: string): boolean => candidate === roo
 const PACKAGE_JSON = "package.json";
 const PUBSPEC_YAML = "pubspec.yaml";
 
+/** 本機 Flutter 開發固定使用的模擬器；避免同名或泛用 target 被 Flutter 任意選取。 */
+export const FLUTTER_IOS_DEVICE_ID = "498D038D-9A95-4CB5-967C-B846B0E93DE8";
+export const FLUTTER_ANDROID_AVD_ID = "Pixel_6_API_34_dev";
+/** 啟動並等待指定 iOS 模擬器，之後才交給 Flutter；已啟動時 simctl boot 的失敗可忽略。 */
+export const FLUTTER_IOS_RUN_SCRIPT = [
+  `xcrun simctl boot ${FLUTTER_IOS_DEVICE_ID} >/dev/null 2>&1 || true`,
+  `xcrun simctl bootstatus ${FLUTTER_IOS_DEVICE_ID} -b || exit 1`,
+  `open -a Simulator --args -CurrentDeviceUDID ${FLUTTER_IOS_DEVICE_ID} || exit 1`,
+  `exec flutter run -d ${FLUTTER_IOS_DEVICE_ID}`
+].join("; ");
+/** 啟動指定 AVD，找到其 ADB serial 後才交給 Flutter，避免泛用 target 選到其他模擬器。 */
+export const FLUTTER_ANDROID_RUN_SCRIPT = [
+  `flutter emulators --launch ${FLUTTER_ANDROID_AVD_ID}`,
+  `for i in $(seq 1 120); do for serial in $(adb devices | grep -E '^emulator-[0-9]+[[:space:]]+device' | cut -f1); do if [ "$(adb -s "$serial" emu avd name 2>/dev/null | head -n 1 | tr -d "\\r")" = "${FLUTTER_ANDROID_AVD_ID}" ]; then exec flutter run -d "$serial"; fi; done; if [ "$i" = "1" ]; then flutter emulators --launch ${FLUTTER_ANDROID_AVD_ID} || exit 1; fi`,
+  "sleep 1",
+  "done",
+  `echo "Android AVD ${FLUTTER_ANDROID_AVD_ID} did not become ready" >&2`,
+  "exit 1"
+].join("; ");
+
 const BACKEND_SCRIPTS = ["dev:backend", "backend:dev", "dev:api", "api:dev", "dev:server", "server:dev", "backend", "api", "server"] as const;
 const FRONTEND_SCRIPTS = ["dev:frontend", "frontend:dev", "dev:web", "web:dev", "dev:client", "client:dev", "frontend", "web", "client", "dev"] as const;
 const DESKTOP_SCRIPTS = ["dev:desktop", "desktop:dev", "dev:electron", "electron:dev", "desktop", "electron"] as const;
@@ -185,14 +205,20 @@ const inferFlutterManifest = async (folder: string, root: string, fs: ManifestFs
         port: true,
         env: {}
       },
-      { name: "flutter-ios", role: "desktop", cwd: ".", command: ["flutter", "run", "-d", "iPhone"], port: false, env: {} },
-      { name: "flutter-android", role: "desktop", cwd: ".", command: ["flutter", "run", "-d", "emulator"], port: false, env: {} }
+      { name: "flutter-ios", role: "desktop", cwd: ".", command: ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT], port: false, env: {} },
+      { name: "flutter-android", role: "desktop", cwd: ".", command: ["zsh", "-lc", FLUTTER_ANDROID_RUN_SCRIPT], port: false, env: {} }
     ]
   });
   if (!validation.ok) {
     return { status: "invalid", errors: validation.errors };
   }
   return { status: "ok", manifest: validation.manifest, hash: createHash("sha256").update(`flutter-mobile:${raw}`).digest("hex") };
+};
+
+/** JSON.parse 的錯誤訊息帶有 (line N column M) 時，轉成「第 N 行第 M 欄」；格式不符回傳 null，呼叫端退回原本的文字。 */
+export const jsonErrorPosition = (message: string): string | null => {
+  const match = /line (\d+) column (\d+)/.exec(message);
+  return match ? `第 ${match[1]} 行第 ${match[2]} 欄` : null;
 };
 
 export const loadManifest = async (folder: string, fs: ManifestFs = nodeManifestFs): Promise<LoadedManifest> => {
@@ -228,8 +254,9 @@ export const loadManifest = async (folder: string, fs: ManifestFs = nodeManifest
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    return { status: "invalid", errors: [`${RUN_MANIFEST_FILE} 不是合法的 JSON`] };
+  } catch (error) {
+    const position = jsonErrorPosition(error instanceof Error ? error.message : "");
+    return { status: "invalid", errors: [`${RUN_MANIFEST_FILE} 不是合法的 JSON${position === null ? "" : `（${position}）`}`] };
   }
 
   const validation = validateManifest(parsed);

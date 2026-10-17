@@ -14,7 +14,7 @@ export const RUN_MANIFEST_MAX_BYTES = 64 * 1024;
 export const RUN_ROLES = ["backend", "frontend", "desktop"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
-export const RUN_PROJECT_ACTIONS = ["stop", "readme"] as const;
+export const RUN_PROJECT_ACTIONS = ["stop", "readme", "reinstall"] as const;
 export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web"] as const;
 export type RunProjectActionName = (typeof RUN_PROJECT_ACTIONS)[number];
 export type RunServiceActionName = (typeof RUN_SERVICE_ACTIONS)[number];
@@ -39,6 +39,8 @@ export interface RunServiceSpec {
   env: Record<string, string>;
   /** 是否需要 gitnrun 分配 port（後端與前端必須為 true）。 */
   port: boolean;
+  /** 本機固定 port；省略時仍由 GitNRun 動態配置。 */
+  fixedPort?: number;
   needs: string[];
 }
 
@@ -86,8 +88,23 @@ export const isForbiddenEnvName = (name: string): boolean =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const hasOnlyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean =>
-  Object.keys(value).every((key) => allowed.includes(key));
+const SERVICE_KEYS = ["name", "role", "cwd", "command", "env", "port", "fixedPort", "needs"] as const;
+
+/** 回傳不在允許清單內的欄位名稱（依物件內的順序）。 */
+const unknownKeys = (value: Record<string, unknown>, allowed: readonly string[]): string[] =>
+  Object.keys(value).filter((key) => !allowed.includes(key));
+
+/** 一次列出所有多餘欄位；底線開頭通常是範例檔的註解，多加一句提醒刪除。 */
+const unknownKeysMessage = (prefix: string, keys: readonly string[], allowed: readonly string[]): string => {
+  const hint = keys.some((key) => key.startsWith("_")) ? "；底線開頭的註解欄位請刪除" : "";
+  return `${prefix}：有不認得的欄位 ${keys.join("、")}（只允許 ${allowed.join("、")}${hint}）`;
+};
+
+/** 服務標籤：名稱合法時帶上服務名稱，讓錯誤能對到描述檔裡的哪一個服務。 */
+const serviceLabel = (raw: unknown, index: number): string => {
+  const name = isRecord(raw) && typeof raw.name === "string" && SERVICE_NAME.test(raw.name) ? raw.name : null;
+  return name === null ? `services[${index}]` : `services[${index}]（${name}）`;
+};
 
 /** 每次呼叫都建新的 RegExp，避免全域旗標的 lastIndex 狀態在呼叫間殘留。 */
 const placeholderRegex = (): RegExp => /\{(?:([a-z][a-z0-9-]{0,29})\.)?(port|url)\}/g;
@@ -116,14 +133,15 @@ const normalizeCwd = (raw: string): string | null => {
 };
 
 const parseService = (raw: unknown, index: number, errors: string[]): RunServiceSpec | null => {
-  const label = `services[${index}]`;
+  const label = serviceLabel(raw, index);
   const before = errors.length;
   if (!isRecord(raw)) {
     errors.push(`${label}：需要是物件`);
     return null;
   }
-  if (!hasOnlyKeys(raw, ["name", "role", "cwd", "command", "env", "port", "needs"])) {
-    errors.push(`${label}：有不認得的欄位`);
+  const extra = unknownKeys(raw, SERVICE_KEYS);
+  if (extra.length > 0) {
+    errors.push(unknownKeysMessage(label, extra, SERVICE_KEYS));
   }
 
   const name = typeof raw.name === "string" && SERVICE_NAME.test(raw.name) ? raw.name : null;
@@ -180,6 +198,13 @@ const parseService = (raw: unknown, index: number, errors: string[]): RunService
   if ((role === "backend" || role === "frontend") && port !== true) {
     errors.push(`${label}.port：後端與前端必須為 true（狀態偵測與開網頁都依賴 port）`);
   }
+  const fixedPort = raw.fixedPort;
+  if (fixedPort !== undefined && (typeof fixedPort !== "number" || !Number.isInteger(fixedPort) || fixedPort < 1024 || fixedPort > 65535)) {
+    errors.push(`${label}.fixedPort：需為 1024～65535 的整數`);
+  }
+  if (fixedPort !== undefined && port !== true) {
+    errors.push(`${label}.fixedPort：只能用於 port: true 的服務`);
+  }
 
   let needs: string[] = [];
   if (raw.needs !== undefined) {
@@ -193,7 +218,7 @@ const parseService = (raw: unknown, index: number, errors: string[]): RunService
   if (errors.length > before || name === null || role === null || cwd === null || typeof port !== "boolean") {
     return null;
   }
-  return { name, role, cwd, command, env, port, needs };
+  return { name, role, cwd, command, env, port, ...(fixedPort === undefined ? {} : { fixedPort: fixedPort as number }), needs };
 };
 
 const findNeedsCycle = (services: readonly RunServiceSpec[]): string | null => {
@@ -223,8 +248,9 @@ export const validateManifest = (raw: unknown): ManifestValidation => {
   if (!isRecord(raw)) {
     return { ok: false, errors: ["描述檔需要是 JSON 物件"] };
   }
-  if (!hasOnlyKeys(raw, ["version", "services"])) {
-    errors.push("最上層有不認得的欄位（只允許 version、services）");
+  const extra = unknownKeys(raw, ["version", "services"]);
+  if (extra.length > 0) {
+    errors.push(unknownKeysMessage("最上層", extra, ["version", "services"]));
   }
   if (raw.version !== RUN_MANIFEST_VERSION) {
     errors.push(`version：目前只支援 ${RUN_MANIFEST_VERSION}`);
@@ -244,11 +270,17 @@ export const validateManifest = (raw: unknown): ManifestValidation => {
   }
 
   const byName = new Map<string, RunServiceSpec>();
+  const byFixedPort = new Map<number, string>();
   for (const service of services) {
     if (byName.has(service.name)) {
       errors.push(`服務名稱重複：${service.name}`);
     }
     byName.set(service.name, service);
+    if (service.fixedPort !== undefined) {
+      const other = byFixedPort.get(service.fixedPort);
+      if (other !== undefined) errors.push(`固定 port ${service.fixedPort} 重複：${other}、${service.name}`);
+      byFixedPort.set(service.fixedPort, service.name);
+    }
   }
 
   for (const service of services) {
@@ -360,7 +392,7 @@ export const selectServices = (manifest: RunManifest, selection: RunStartSelecti
 
 /** 需要向作業系統新要的 port 數量：有 port 需求、且沒有可沿用 port 的服務。 */
 export const countFreshPorts = (manifest: RunManifest, reuse: Readonly<Record<string, number>>): number =>
-  manifest.services.filter((service) => service.port && reuse[service.name] === undefined).length;
+  manifest.services.filter((service) => service.port && service.fixedPort === undefined && reuse[service.name] === undefined).length;
 
 export interface RunStartItem {
   name: string;
@@ -393,7 +425,7 @@ export const planStart = (
   for (const service of manifest.services) {
     if (!service.port) continue;
     const existing = reuse[service.name];
-    const assigned = existing ?? queue.shift();
+    const assigned = service.fixedPort ?? existing ?? queue.shift();
     if (assigned === undefined) {
       throw new Error("新配置的 port 數量不足");
     }
@@ -443,6 +475,7 @@ export interface RunServiceView {
   name: string;
   role: RunRole;
   port: number | null;
+  fixedPort: number | null;
   url: string | null;
   state: RunServiceState;
   /** 唯讀顯示用的指令（佔位保持原樣）。 */
@@ -465,16 +498,18 @@ export interface RunTargetView {
   buttons: RunButtons;
   /** 專案根目錄的 README.md 能不能開；找不到時 reason 說明原因。路徑留在主程序，不交給畫面。 */
   readme: RunButtonState;
+  /** 刪除 node_modules 並重裝依賴；不是 Node 專案、服務還在跑、沒有 iTerm2 時不可按。 */
+  reinstall: RunButtonState;
   /** dev 通關帳號；沒設定為空字串。帳號不是密鑰，可以完整交給畫面。 */
   account: string;
-  /** dev 通關密碼的狀態（是否已設、末四碼）；明文永遠不離開主程序。 */
-  passcode: SecretStatus;
+  /** 舊版存在密鑰保險庫的 Debug 密碼；已不再使用，只用來提示並讓你清除。 */
+  legacyPasscode: SecretStatus;
+  /** Debug 密碼的來源（專案環境檔裡的某個鍵）；明文永遠不離開主程序。 */
+  passcodeSource: PasscodeSourceView;
 }
 
 export interface RunOverview {
   iterm: boolean;
-  /** 此電腦能否用系統金鑰保護存密碼；false 時密碼無法儲存，帳號仍可使用。 */
-  vaultAvailable: boolean;
   targets: RunTargetView[];
 }
 
@@ -485,6 +520,8 @@ export type RunFailureReason =
   | "invalid-manifest"
   | "iterm-missing"
   | "no-readme"
+  | "no-package"
+  | "running"
   | "permission-denied"
   | "denied"
   | "not-running"
@@ -574,6 +611,23 @@ export const runServiceButtonStates = (
   else web = enabled;
 
   return { start, restart, stop, web };
+};
+
+// ---------------------------------------------------------------------------
+// 重裝依賴
+// ---------------------------------------------------------------------------
+
+export const INSTALL_MANAGERS = ["pnpm", "npm", "yarn", "bun"] as const;
+export type InstallManager = (typeof INSTALL_MANAGERS)[number];
+
+/** 刪掉 node_modules 再重裝；進到指令的只有白名單內的套件管理員名稱，沒有任何外部輸入。 */
+export const reinstallCommand = (manager: InstallManager): string => `rm -rf node_modules && ${manager} install`;
+
+export const reinstallButtonState = (input: { hasPackage: boolean; busy: boolean; iterm: boolean }): RunButtonState => {
+  if (!input.hasPackage) return disabled("沒有 package.json，不是 Node 專案");
+  if (input.busy) return disabled("請先結束執行中的服務");
+  if (!input.iterm) return disabled("找不到 iTerm2");
+  return enabled;
 };
 
 // ---------------------------------------------------------------------------
@@ -701,6 +755,80 @@ export const normalizeRunAccount = (value: unknown): string | null => {
   const trimmed = value.trim();
   return trimmed.length > MAX_ACCOUNT_LENGTH || CONTROL.test(trimmed) ? null : trimmed;
 };
+
+// ---------------------------------------------------------------------------
+// dev 通關密碼的來源：專案環境檔裡的某個鍵（GitNRun 只讀取，不保存、不寫入）
+// ---------------------------------------------------------------------------
+
+/** 只接受這幾種檔名；路徑可以帶資料夾（apps/edge/.dev.vars），但檔名本身必須在名單內。 */
+export const PASSCODE_ENV_FILES = [".env", ".env.local", ".env.development", ".env.development.local", ".dev.vars"] as const;
+export const MAX_PASSCODE_FILE_LENGTH = 200;
+export const MAX_PASSCODE_FILE_SEGMENTS = 5;
+export const MAX_PASSCODE_ENV_BYTES = 64 * 1024;
+/** 這些前綴的變數會被打包進前端程式碼，不能拿來放密碼。 */
+export const PUBLIC_ENV_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "NUXT_PUBLIC_", "PUBLIC_", "EXPO_PUBLIC_"] as const;
+const PASSCODE_KEY = /^[A-Z_][A-Z0-9_]{0,63}$/;
+
+export interface PasscodeBinding {
+  /** 相對專案資料夾的環境檔路徑，例如 .dev.vars 或 apps/edge/.dev.vars。 */
+  file: string;
+  key: string;
+}
+
+export type PasscodeSourceState = "unbound" | "ok" | "no-file" | "no-key" | "empty" | "unsafe";
+
+export interface PasscodeSourceView {
+  binding: PasscodeBinding | null;
+  state: PasscodeSourceState;
+  /** 讀到密碼時的末四碼（值太短為空字串）；明文不交給畫面。 */
+  hint: string;
+  /** 尚未綁定時，依框架偵測到的建議；只有檔案與鍵名，沒有值。 */
+  candidates: PasscodeBinding[];
+}
+
+export const isPasscodeKey = (value: unknown): value is string =>
+  typeof value === "string" && PASSCODE_KEY.test(value) && !PUBLIC_ENV_PREFIXES.some((prefix) => value.startsWith(prefix));
+
+/** 相對路徑、不含 ..、每一段都非空、檔名在白名單內。 */
+export const isPasscodeFile = (value: unknown): value is string => {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_PASSCODE_FILE_LENGTH || CONTROL.test(value) || value.includes("\\")) {
+    return false;
+  }
+  const segments = value.split("/");
+  if (segments.length > MAX_PASSCODE_FILE_SEGMENTS || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return false;
+  }
+  return (PASSCODE_ENV_FILES as readonly string[]).includes(segments[segments.length - 1] ?? "");
+};
+
+/** 檔案與鍵名都合法才回傳；多餘欄位忽略。 */
+export const normalizePasscodeBinding = (value: unknown): PasscodeBinding | null => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { file, key } = value as Record<string, unknown>;
+  return isPasscodeFile(file) && isPasscodeKey(key) ? { file, key } : null;
+};
+
+/** 來源目前的狀態說明（不含檔案與鍵名）；畫面與複製失敗訊息共用。 */
+export const passcodeStateText = (state: PasscodeSourceState): string => {
+  switch (state) {
+    case "ok":
+      return "已讀到";
+    case "unbound":
+      return "還沒有指定密碼來源，請按「設定密碼」選擇環境檔";
+    case "no-file":
+      return "找不到這個環境檔";
+    case "no-key":
+      return "環境檔裡沒有這個鍵";
+    case "empty":
+      return "環境檔裡這個鍵的值是空的";
+    case "unsafe":
+      return `環境檔不安全（不是一般檔案、連結到專案外，或超過 ${MAX_PASSCODE_ENV_BYTES / 1024} KB）`;
+  }
+};
+
+/** 帶上檔案與鍵名的完整說明，用在複製失敗的訊息。 */
+export const passcodeProblem = (state: PasscodeSourceState, binding: PasscodeBinding | null): string =>
+  `${binding === null ? "" : `${binding.file} 的 ${binding.key}：`}${passcodeStateText(state)}`;
 
 export const parseRunTargetId = (value: string): { kind: "p" | "f"; id: number } | null => {
   const match = TARGET_ID.exec(value);

@@ -4,10 +4,12 @@ import {
   RUN_GROUPS,
   countUngroupedRunTargets,
   folderNameOf,
+  orderRunServiceRows,
   runGroupById,
   runGroupIdOf,
   targetsOfRunGroup
 } from "@shared/run-groups";
+import { groupRunServices } from "@shared/run";
 
 const ROOT = "/Users/zorawl/Documents/GitHub";
 
@@ -23,7 +25,7 @@ describe("run groups", () => {
       ["translationService", "創作者宇宙"],
       ["GitNRun", "自己用"],
       ["socialHub", "自己用"],
-      ["yumeAegis", "不知道什麼時候才完成"]
+      ["yumeAegis", "遊戲需要美術"]
     ];
     for (const [name, label] of expected) {
       assert.equal(runGroupById(runGroupIdOf(`${ROOT}/${name}`)).label, label, name);
@@ -72,5 +74,77 @@ describe("run groups", () => {
     assert.deepEqual(targetsOfRunGroup(targets, "other").map((target) => target.id), ["f:1"]);
     assert.equal(countUngroupedRunTargets(targets), 1);
     assert.equal(countUngroupedRunTargets([]), 0);
+  });
+
+  it("orders the targets of a group by the group table, whatever order they come in", () => {
+    const targets = [
+      { id: "a", folder: `${ROOT}/MahoPurr-Catalyst` },
+      { id: "b", folder: `${ROOT}/translationservice/` },
+      { id: "c", folder: `${ROOT}/FICTIONPURR` }
+    ];
+    assert.deepEqual(targetsOfRunGroup(targets, "creator").map((target) => target.id), ["c", "b", "a"]);
+    assert.deepEqual(targets.map((target) => target.id), ["a", "b", "c"]);
+  });
+
+  it("keeps the incoming order for targets in the other group", () => {
+    const targets = [
+      { id: "x", folder: "/work/zeta" },
+      { id: "y", folder: "/work/alpha" },
+      { id: "z", folder: "/work/mid" }
+    ];
+    assert.deepEqual(targetsOfRunGroup(targets, "other").map((target) => target.id), ["x", "y", "z"]);
+  });
+});
+
+describe("run service order", () => {
+  const rowsOf = (...names: string[]) => groupRunServices(names.map((name) => ({ name })));
+  const keysOf = (rows: ReturnType<typeof rowsOf>) => rows.map((row) => (row.kind === "mobile" ? `mobile:${row.title}` : row.service.name));
+  const FICTION_DECLARED = [
+    "api",
+    "web-fictionpurr",
+    "web-sparkpurr",
+    "desktop-mahopurr",
+    "mobile-mahopurr-ios",
+    "mobile-mahopurr-android",
+    "mobile-fictionpurr-ios",
+    "mobile-fictionpurr-android",
+    "mobile-anipurr-ios",
+    "mobile-anipurr-android",
+    "mobile-poppurr-ios",
+    "mobile-poppurr-android"
+  ];
+
+  it("puts the fictionPurr services in the development order, with each mobile app still one row", () => {
+    const ordered = orderRunServiceRows(`${ROOT}/fictionPurr`, rowsOf(...FICTION_DECLARED));
+    assert.deepEqual(keysOf(ordered), [
+      "api",
+      "desktop-mahopurr",
+      "mobile:mobile-mahopurr",
+      "web-sparkpurr",
+      "mobile:mobile-fictionpurr",
+      "web-fictionpurr",
+      "mobile:mobile-anipurr",
+      "mobile:mobile-poppurr"
+    ]);
+    const mahopurr = ordered[2];
+    assert.deepEqual(mahopurr?.kind === "mobile" ? mahopurr.services.map((entry) => entry.platform) : [], ["ios", "android"]);
+  });
+
+  it("matches the project folder name regardless of case", () => {
+    const ordered = orderRunServiceRows("/work/FICTIONPURR/", rowsOf("web-fictionpurr", "api"));
+    assert.deepEqual(keysOf(ordered), ["api", "web-fictionpurr"]);
+  });
+
+  it("puts services missing from the table after the listed ones, in their original order", () => {
+    const ordered = orderRunServiceRows(`${ROOT}/fictionPurr`, rowsOf("zeta", "web-sparkpurr", "alpha", "api"));
+    assert.deepEqual(keysOf(ordered), ["api", "web-sparkpurr", "zeta", "alpha"]);
+  });
+
+  it("leaves projects without an order table untouched and does not mutate the input", () => {
+    const rows = rowsOf("web", "api");
+    assert.deepEqual(keysOf(orderRunServiceRows(`${ROOT}/toBloom`, rows)), ["web", "api"]);
+    const fiction = rowsOf("web-sparkpurr", "api");
+    orderRunServiceRows(`${ROOT}/fictionPurr`, fiction);
+    assert.deepEqual(keysOf(fiction), ["web-sparkpurr", "api"]);
   });
 });

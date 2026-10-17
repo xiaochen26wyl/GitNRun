@@ -1,20 +1,23 @@
 import { normalizeFolderPath } from "@shared/launcher";
-import { isRunTargetId, normalizeRunAccount } from "@shared/run";
+import { isRunTargetId, normalizePasscodeBinding, normalizeRunAccount, type PasscodeBinding } from "@shared/run";
 import type { Db } from "@main/db/database";
 import { getSetting, setSetting } from "@main/db/settings-repo";
 
 /**
- * 專案啟動頁存在設定表的三份資料：
+ * 專案啟動頁存在設定表的幾份資料：
  * - 使用者拖曳加入的資料夾（只存路徑）
  * - 已確認過的描述檔雜湊（資料夾 → sha256）
- * - dev 通關帳號（目標識別 → 帳號）；密碼不在這裡，在密鑰保險庫。
- * 後兩者的 key（run.trusted、run.accounts）不進備份、也不從備份還原。
+ * - dev 通關帳號（目標識別 → 帳號）
+ * - Debug 密碼的來源（目標識別 → 環境檔路徑與鍵名）；密碼本身只在專案的環境檔裡，這裡不存。
+ * run.trusted、run.accounts 不進備份、也不從備份還原；來源只有檔名與鍵名，不是密鑰，隨設定備份。
  */
 
 export const RUN_KEYS = {
   folders: "run.folders",
   trusted: "run.trusted",
-  accounts: "run.accounts"
+  accounts: "run.accounts",
+  passcodeSources: "run.passcodeSources",
+  passcodeMigrated: "run.passcodeMigrated"
 } as const;
 
 export interface RunFolder {
@@ -25,6 +28,7 @@ export interface RunFolder {
 const MAX_FOLDERS = 100;
 const MAX_TRUSTED = 200;
 const MAX_ACCOUNTS = 300;
+const MAX_PASSCODE_SOURCES = 300;
 const HASH = /^[0-9a-f]{64}$/;
 
 const isFolder = (value: unknown): value is RunFolder =>
@@ -119,3 +123,41 @@ export const setRunAccount = (db: Db, targetId: string, account: string): void =
   const kept = entries.length > MAX_ACCOUNTS ? entries.slice(entries.length - MAX_ACCOUNTS) : entries;
   setSetting(db, RUN_KEYS.accounts, Object.fromEntries(kept));
 };
+
+// ---------------------------------------------------------------------------
+// Debug 密碼的來源
+// ---------------------------------------------------------------------------
+
+/** 讀取時重新驗證，資料庫裡被改壞的項目當作沒有綁定。 */
+const readPasscodeSources = (db: Db): Record<string, PasscodeBinding> => {
+  const stored = getSetting<unknown>(db, RUN_KEYS.passcodeSources, {});
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) {
+    return {};
+  }
+  const result: Record<string, PasscodeBinding> = {};
+  for (const [targetId, raw] of Object.entries(stored)) {
+    const binding = normalizePasscodeBinding(raw);
+    if (isRunTargetId(targetId) && binding !== null) result[targetId] = binding;
+  }
+  return result;
+};
+
+export const getPasscodeBinding = (db: Db, targetId: string): PasscodeBinding | null => readPasscodeSources(db)[targetId] ?? null;
+
+/** 綁定需已通過 normalizePasscodeBinding；null = 解除綁定。 */
+export const setPasscodeBinding = (db: Db, targetId: string, binding: PasscodeBinding | null): void => {
+  const sources = readPasscodeSources(db);
+  delete sources[targetId];
+  if (binding !== null) {
+    sources[targetId] = { file: binding.file, key: binding.key };
+  }
+  const entries = Object.entries(sources);
+  // 超過上限就丟掉最舊的（物件保留插入順序）。
+  const kept = entries.length > MAX_PASSCODE_SOURCES ? entries.slice(entries.length - MAX_PASSCODE_SOURCES) : entries;
+  setSetting(db, RUN_KEYS.passcodeSources, Object.fromEntries(kept));
+};
+
+/** 舊版寫死兩個專案的一次性遷移是否已經跑過。 */
+export const isPasscodeMigrated = (db: Db): boolean => getSetting<unknown>(db, RUN_KEYS.passcodeMigrated, false) === true;
+
+export const markPasscodeMigrated = (db: Db): void => setSetting(db, RUN_KEYS.passcodeMigrated, true);

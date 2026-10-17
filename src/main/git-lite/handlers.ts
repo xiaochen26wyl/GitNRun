@@ -1,6 +1,13 @@
 import { basename, normalize } from "node:path";
 import { normalizeFolderPath } from "@shared/launcher";
-import type { GitLiteIssue, GitLiteOverview, GitLiteProject, GitLiteRepo } from "@shared/git-lite";
+import {
+  isIssueSkippedFolder,
+  type GitLiteIssue,
+  type GitLiteOverview,
+  type GitLiteOverviewOptions,
+  type GitLiteProject,
+  type GitLiteRepo
+} from "@shared/git-lite";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
 import type { GitRunner } from "@main/git/run-git";
@@ -17,7 +24,8 @@ export interface GitLiteHandlersDeps {
 }
 
 export interface GitLiteHandlers {
-  overview(): Promise<GitLiteOverview>;
+  /** options.issues 為 false 時只讀本機 git，不呼叫 GitHub；省略時連 issues 一起讀。 */
+  overview(options?: GitLiteOverviewOptions): Promise<GitLiteOverview>;
 }
 
 interface Target {
@@ -77,6 +85,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
+type IssueState = Pick<GitLiteProject, "issues" | "issuesTruncated" | "issueError" | "issueErrorKind">;
+
+const noIssues = (): IssueState => ({ issues: [], issuesTruncated: false, issueError: null, issueErrorKind: null });
+
+const issueFailure = (kind: NonNullable<GitLiteProject["issueErrorKind"]>, message: string): IssueState => ({
+  ...noIssues(),
+  issueError: message,
+  issueErrorKind: kind
+});
+
+/** 單頁回傳筆數已達上限就視為被截斷；要在濾掉 PR 之前算，否則 20 筆裡有 PR 時會誤判成沒有更多。 */
+const isTruncated = (raw: unknown): boolean => Array.isArray(raw) && raw.length >= MAX_ISSUES;
+
 const parseIssues = (raw: unknown): GitLiteIssue[] =>
   (Array.isArray(raw) ? raw : [])
     .filter((item) => isRecord(item) && !isRecord(item.pull_request))
@@ -123,7 +144,7 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
     return result;
   };
 
-  const readProject = async (target: Target): Promise<Omit<GitLiteProject, "issues" | "issueError">> => {
+  const readProject = async (target: Target): Promise<Omit<GitLiteProject, keyof IssueState>> => {
     const base = {
       id: target.id,
       label: target.label,
@@ -140,7 +161,7 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
       untrackedFiles: 0,
       repo: null,
       statusError: null
-    } satisfies Omit<GitLiteProject, "issues" | "issueError">;
+    } satisfies Omit<GitLiteProject, keyof IssueState>;
 
     const inside = await deps.runGit(target.folder, ["rev-parse", "--is-inside-work-tree"]);
     if (inside.code !== 0 || inside.stdout.trim() !== "true") {
@@ -153,7 +174,8 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
       upstream.code === 0
         ? await deps.runGit(target.folder, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
         : null;
-    const status = await deps.runGit(target.folder, ["status", "--porcelain=v1"]);
+    // 未追蹤的資料夾要逐檔計入，否則新增一整個資料夾只算 1 個變更。
+    const status = await deps.runGit(target.folder, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const remote = await deps.runGit(target.folder, ["remote", "get-url", "origin"]);
 
     const [aheadText, behindText] = counts?.code === 0 ? counts.stdout.trim().split(/\s+/, 2) : [];
@@ -165,13 +187,15 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
       ahead: safeNumber(aheadText ?? "0"),
       behind: safeNumber(behindText ?? "0"),
       ...parseStatus(status.code === 0 ? status.stdout : ""),
-      repo: remote.code === 0 ? parseGithubRemote(remote.stdout) : null
+      repo: remote.code === 0 ? parseGithubRemote(remote.stdout) : null,
+      // 讀不到狀態時標記出來，畫面才不會把失敗當成 0 個變更。
+      statusError: status.code === 0 ? null : "無法讀取 git 狀態"
     };
   };
 
-  const readIssues = async (repo: GitLiteRepo | null): Promise<{ issues: GitLiteIssue[]; issueError: string | null }> => {
+  const readIssues = async (repo: GitLiteRepo | null): Promise<IssueState> => {
     if (!repo) {
-      return { issues: [], issueError: null };
+      return noIssues();
     }
     try {
       return await deps.vault.useSecret("github.pat", async (token) => {
@@ -185,30 +209,32 @@ export const createGitLiteHandlers = (deps: GitLiteHandlersDeps): GitLiteHandler
           }
         });
         if (response.status === 401 || response.status === 403) {
-          return { issues: [], issueError: "GitHub token 無法讀取 issues" };
+          return issueFailure("token-rejected", "GitHub token 無法讀取 issues");
         }
         if (response.status === 404) {
-          return { issues: [], issueError: "找不到 GitHub repo 或沒有權限" };
+          return issueFailure("not-found", "找不到 GitHub repo 或沒有權限");
         }
         if (response.status !== 200) {
-          return { issues: [], issueError: `GitHub 回應 HTTP ${response.status}` };
+          return issueFailure("http", `GitHub 回應 HTTP ${response.status}`);
         }
-        return { issues: parseIssues(await response.json()), issueError: null };
+        const body: unknown = await response.json();
+        return { ...noIssues(), issues: parseIssues(body), issuesTruncated: isTruncated(body) };
       });
     } catch (error) {
-      if (error instanceof SecretMissingError) return { issues: [], issueError: "尚未設定 GitHub token" };
-      if (error instanceof SecretUnreadableError) return { issues: [], issueError: "GitHub token 無法解密，請重新輸入" };
-      return { issues: [], issueError: "無法連線到 GitHub" };
+      if (error instanceof SecretMissingError) return issueFailure("no-token", "尚未設定 GitHub token");
+      if (error instanceof SecretUnreadableError) return issueFailure("no-token", "GitHub token 無法解密，請重新輸入");
+      return issueFailure("network", "無法連線到 GitHub");
     }
   };
 
   return {
-    async overview() {
+    async overview(options) {
+      const withIssues = options?.issues ?? true;
       const githubTokenConfigured = deps.vault.getStatus("github.pat").configured;
       const projects = await Promise.all(
         targets().map(async (target) => {
           const project = await readProject(target);
-          const issueState = await readIssues(project.repo);
+          const issueState = !withIssues || isIssueSkippedFolder(project.folder) ? noIssues() : await readIssues(project.repo);
           return { ...project, ...issueState };
         })
       );

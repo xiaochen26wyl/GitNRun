@@ -1,16 +1,17 @@
 import type { AiResult, AiSettings, AiUsage, ConflictReport, OutgoingPreview } from "@shared/ai";
-import type { AppSettings, AppSettingsPatch, BackupFileInfo, DataUsage, RestoreSummary } from "@shared/app-settings";
+import type { AppSettings, AppSettingsPatch, BackupOverview, DataUsage, RestoreSummary } from "@shared/app-settings";
 import type { BranchRuleFormInput, BranchRuleView } from "@shared/branch-template";
 import type { BrandColorMap } from "@shared/brand";
 import type { CommandOutputEvent } from "@shared/command-output";
 import type { DocumentShortcut, DocumentShortcutInput } from "@shared/documents";
 import type { EventPage, EventQuery, PushEvent } from "@shared/events";
-import type { GitLiteOverview } from "@shared/git-lite";
+import type { GitLiteOverview, GitLiteOverviewOptions } from "@shared/git-lite";
 import type { LogPage, LogQuery } from "@shared/logs";
 import type { MonitorChange, MonitorStatus } from "@shared/monitor";
+import type { PortSweepResult, PortSweepScan } from "@shared/port-sweep";
 import type { Project, ProjectInput } from "@shared/projects";
 import type { LaunchResult, LauncherSettings, TerminalAvailability, TerminalMapping, TerminalMappingInput } from "@shared/launcher";
-import type { RunAction, RunActionResult, RunOverview } from "@shared/run";
+import type { PasscodeBinding, RunAction, RunActionResult, RunOverview } from "@shared/run";
 import type { DryRunReport, RuleExecution, RulePreviewReport, RulesExportResult, RulesImportResult } from "@shared/rule-runs";
 import type { Rule, RuleInput } from "@shared/rules";
 import type { SecretStatus, SecretTestResult, SecretsOverview } from "@shared/secrets";
@@ -69,6 +70,11 @@ export const IPC = {
   runRemoveFolder: "run:remove-folder",
   runSetAccount: "run:set-account",
   runCopyPasscode: "run:copy-passcode",
+  runBindPasscode: "run:bind-passcode",
+  runUnbindPasscode: "run:unbind-passcode",
+  runOpenPasscodeFile: "run:open-passcode-file",
+  runScanPorts: "run:scan-ports",
+  runReleasePorts: "run:release-ports",
   documentsList: "documents:list",
   documentsSave: "documents:save",
   documentsRemove: "documents:remove",
@@ -98,7 +104,9 @@ export const IPC = {
   appSettingsDataUsage: "app-settings:data-usage",
   backupsList: "backups:list",
   backupsNow: "backups:now",
-  backupsRestore: "backups:restore"
+  backupsRestore: "backups:restore",
+  backupsDelete: "backups:delete",
+  backupsDeleteAll: "backups:delete-all"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -193,10 +201,19 @@ export interface GitNRunApi {
   runProjectAction(targetId: string, action: RunAction): Promise<RunActionResult>;
   addRunFolder(folder: string): Promise<void>;
   removeRunFolder(targetId: string): Promise<void>;
-  /** dev 通關帳號；空字串 = 清除。密碼用 setSecret／deleteSecret（名稱見 RunTargetView.passcode.name）。 */
+  /** dev 通關帳號；空字串 = 清除。密碼不經過 GitNRun 保存，見 bindRunPasscode。 */
   setRunAccount(targetId: string, account: string): Promise<void>;
-  /** 由主程序把 dev 通關密碼放進剪貼簿（60 秒後自動清除），渲染層拿不到明文。 */
+  /** 由主程序讀專案環境檔裡的 Debug 密碼並放進剪貼簿（60 秒後自動清除），渲染層拿不到明文。 */
   copyRunPasscode(targetId: string): Promise<void>;
+  /** 指定 Debug 密碼讀哪個環境檔（相對專案的路徑）的哪個鍵；密碼只留在環境檔，GitNRun 只讀取。 */
+  bindRunPasscode(targetId: string, binding: PasscodeBinding): Promise<void>;
+  unbindRunPasscode(targetId: string): Promise<void>;
+  /** 用文件編輯器開綁定的環境檔；路徑由主程序算出。 */
+  openRunPasscodeFile(targetId: string): Promise<void>;
+  /** 列出終端機手動開的 port 與占用它的程序（不結束任何東西）。 */
+  scanTerminalPorts(): Promise<PortSweepScan>;
+  /** 結束所有終端機手動開的 port 的程序；pid 由主程序重新掃描決定，渲染層不傳任何 pid。 */
+  releaseTerminalPorts(): Promise<PortSweepResult>;
   listDocumentShortcuts(): Promise<DocumentShortcut[]>;
   saveDocumentShortcut(input: DocumentShortcutInput): Promise<DocumentShortcut>;
   removeDocumentShortcut(id: number): Promise<void>;
@@ -204,7 +221,8 @@ export interface GitNRunApi {
   /** 專案根目錄：底下每個含 .git 的子資料夾都會自動掃 README；空字串 = 關閉。 */
   getDocumentRoot(): Promise<string>;
   setDocumentRoot(path: string): Promise<string>;
-  getGitLiteOverview(): Promise<GitLiteOverview>;
+  /** options.issues 為 false 時只讀本機 git 狀態、不呼叫 GitHub；省略時連 issues 一起讀。 */
+  getGitLiteOverview(options?: GitLiteOverviewOptions): Promise<GitLiteOverview>;
   /** 各專案 README「品牌配色 → 主要配色」的主色：資料夾（已正規化）→ 大寫 #RRGGBB，沒有品牌色的資料夾不會出現。 */
   getBrandColors(): Promise<BrandColorMap>;
   /** 拖曳進視窗的檔案／資料夾的本機路徑（Electron 不再提供 File.path，要透過 preload 取得）。 */
@@ -235,10 +253,14 @@ export interface GitNRunApi {
   getAppSettings(): Promise<AppSettings>;
   saveAppSettings(patch: AppSettingsPatch): Promise<AppSettings>;
   getDataUsage(): Promise<DataUsage>;
-  listBackups(): Promise<BackupFileInfo[]>;
+  listBackups(): Promise<BackupOverview>;
   backupNow(): Promise<{ written: boolean }>;
   /** 只能還原備份資料夾裡的檔案；還原後規則一律回到「寫入動作需確認」。金鑰不在備份裡，需重新輸入。 */
   restoreBackup(name: string): Promise<RestoreSummary>;
+  /** 只能刪備份資料夾裡的備份檔；刪除不會關閉每日自動備份。 */
+  deleteBackup(name: string): Promise<void>;
+  /** 刪除全部備份，回傳實際刪掉的份數。 */
+  deleteAllBackups(): Promise<{ removed: number }>;
 
   /** 有新事件或狀態變動時通知；回傳取消訂閱的函式。 */
   onMonitorChanged(handler: (change: MonitorChange) => void): () => void;

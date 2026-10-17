@@ -40,6 +40,27 @@ describe("allocatePorts", () => {
       await close(busy);
     }
   });
+
+  it("never hands out the ports reserved for manual starts and releases the ones it skips", async () => {
+    const sequence = [5173, 5174, 41001, 5173, 41002];
+    const closed: number[] = [];
+    const bind = async (): Promise<{ server: net.Server; port: number }> => {
+      const port = sequence.shift() as number;
+      const server = { close: (callback?: () => void) => { closed.push(port); callback?.(); } } as unknown as net.Server;
+      return { server, port };
+    };
+    assert.deepEqual(await allocatePorts(2, [], bind), [41001, 41002]);
+    assert.ok([5173, 5174].every((port) => closed.includes(port)));
+  });
+
+  it("also skips the fixed ports it is told to exclude", async () => {
+    const sequence = [41001, 41002, 41003];
+    const bind = async (): Promise<{ server: net.Server; port: number }> => {
+      const port = sequence.shift() as number;
+      return { server: { close: (callback?: () => void) => callback?.() } as unknown as net.Server, port };
+    };
+    assert.deepEqual(await allocatePorts(2, [41001], bind), [41002, 41003]);
+  });
 });
 
 describe("probePort", () => {

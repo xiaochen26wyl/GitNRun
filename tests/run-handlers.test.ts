@@ -1,14 +1,38 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
-import { validateManifest, type MobilePlatform, type RunAction, type RunManifest, type RunServiceActionName } from "@shared/run";
+import {
+  isPasscodeFile,
+  isPasscodeKey,
+  normalizePasscodeBinding,
+  passcodeProblem,
+  validateManifest,
+  type InstallManager,
+  type MobilePlatform,
+  type PasscodeBinding,
+  type RunAction,
+  type RunManifest,
+  type RunServiceActionName
+} from "@shared/run";
 import { addProject } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { ItermTab } from "@main/launcher/osascript";
-import { createRunHandlers, type ConfirmCommandsRequest } from "@main/run/handlers";
-import type { LoadedManifest } from "@main/run/manifest";
-import { getRunAccount, isRunTrusted } from "@main/run/store";
+import type { PortSweepResult } from "@shared/port-sweep";
+import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest } from "@main/run/handlers";
+import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, type LoadedManifest } from "@main/run/manifest";
+import {
+  fsPasscodeSource,
+  interpretEnvText,
+  isPasscodeCandidateKey,
+  legacyPasscodeBinding,
+  parseEnvText,
+  passcodeScanFiles,
+  type PasscodeSourceReader
+} from "@main/run/passcode-source";
+import { getPasscodeBinding, getRunAccount, isRunTrusted, setPasscodeBinding } from "@main/run/store";
+import { setSetting } from "@main/db/settings-repo";
 import { createVault } from "@main/vault/vault";
 import { createTestDb } from "./helpers/db";
 import { createFakeCipher } from "./helpers/fake-cipher";
@@ -39,21 +63,37 @@ const multiFrontendManifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const mobileManifestOf = (): RunManifest => {
+const fixedManifestOf = (): RunManifest => {
   const result = validateManifest({
     version: 1,
     services: [
-      { name: "web", role: "frontend", command: ["pnpm", "dev"], port: true, env: { PORT: "{port}" } },
-      { name: "mobile-anipurr-ios", role: "desktop", command: ["flutter", "run", "-d", "iPhone"], port: false, env: {} },
-      { name: "mobile-anipurr-android", role: "desktop", command: ["flutter", "run", "-d", "emulator"], port: false, env: {} }
+      { name: "api", role: "backend", command: ["pnpm", "dev"], port: true, fixedPort: 5174, env: { PORT: "{port}" } },
+      { name: "web", role: "frontend", command: ["pnpm", "dev"], port: true, needs: ["api"], env: { PORT: "{port}", API: "{api.url}" } }
     ]
   });
   assert.ok(result.ok);
   return result.manifest;
 };
 
-const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string } } = {}) => {
+const mobileManifestOf = (): RunManifest => {
+  const result = validateManifest({
+    version: 1,
+    services: [
+      { name: "web", role: "frontend", command: ["pnpm", "dev"], port: true, env: { PORT: "{port}" } },
+      { name: "mobile-anipurr-ios", role: "desktop", command: ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT], port: false, env: {} },
+      { name: "mobile-anipurr-android", role: "desktop", command: ["zsh", "-lc", FLUTTER_ANDROID_RUN_SCRIPT], port: false, env: {} }
+    ]
+  });
+  assert.ok(result.ok);
+  return result.manifest;
+};
+
+const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult } = {}) => {
   const db = createTestDb();
+  /** 有 package.json 的資料夾（絕對路徑）。 */
+  const packageFiles = new Set((options.packages ?? []).map((dir) => `${dir}/package.json`));
+  const reinstallConfirms: ConfirmReinstallRequest[] = [];
+  const sweepCalls: string[] = [];
   const listening = new Set<number>();
   const launched: ItermTab[][] = [];
   const opened: string[] = [];
@@ -63,20 +103,59 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
   const stopped: number[][] = [];
   const closed: string[][] = [];
   const simulators: MobilePlatform[] = [];
+  /** 外部動作發生的先後：launch、stopPorts、closeTabs、simulator:<平台>。 */
+  const events: string[] = [];
+  /** 結束後還要被探測幾次才會釋放的 port（模擬收尾較慢的程序）。 */
+  const pending = new Map<number, number>();
   const logs: string[] = [];
   const copied: string[] = [];
   const cipher = createFakeCipher();
   const vault = createVault(db, cipher);
+  /** 環境檔內容：鍵是「資料夾::相對路徑」；讀取用真正的 dotenv 解析。 */
+  const passcodeFiles = new Map<string, string>(Object.entries(options.passcodeFiles ?? {}));
+  const candidates: Record<string, PasscodeBinding[]> = { ...(options.candidates ?? {}) };
+  const scans: Array<{ folder: string; frameworks: Array<string | null> }> = [];
+  const passcodeSource: PasscodeSourceReader = {
+    read: async (folder, binding) => {
+      const text = passcodeFiles.get(`${folder}::${binding.file}`);
+      return text === undefined ? { state: "no-file", value: null } : interpretEnvText(text, binding.key);
+    },
+    scan: async (folder, input) => {
+      scans.push({ folder, frameworks: [...input.frameworks] });
+      return candidates[folder] ?? [];
+    },
+    locate: async (folder, binding) => (passcodeFiles.has(`${folder}::${binding.file}`) ? `${folder}/${binding.file}` : null)
+  };
   let next = 41000;
   let time = 1_000_000;
   let loaded: LoadedManifest = options.loaded ?? { status: "ok", manifest: manifestOf(), hash: "a".repeat(64) };
-  const state = { iterm: options.iterm ?? true, allow: options.allow ?? true, launch: options.launch ?? { code: 0, stderr: "" }, close: { code: 0, stderr: "" }, simulator: { code: 0, stderr: "" } };
+  const state = {
+    iterm: options.iterm ?? true,
+    allow: options.allow ?? true,
+    launch: options.launch ?? { code: 0, stderr: "" },
+    stop: { code: 0, stderr: "" },
+    /** 結束後 port 何時釋放：立刻、探測兩次後、永遠不釋放。 */
+    release: "now" as "now" | "slow" | "never",
+    close: { code: 0, stderr: "" },
+    simulator: { code: 0, stderr: "" }
+  };
 
   const handlers = createRunHandlers({
     db,
     logger: { log: (entry) => void logs.push(entry.message) },
     loadManifest: async () => loaded,
-    probe: async (port) => listening.has(port),
+    probe: async (port) => {
+      const left = pending.get(port);
+      if (left !== undefined) {
+        if (left <= 0) {
+          pending.delete(port);
+          listening.delete(port);
+        } else {
+          pending.set(port, left - 1);
+        }
+      }
+      return listening.has(port);
+    },
     allocatePorts: async (count) => Array.from({ length: count }, () => (next += 1)),
     writePortsFile: async (folder, services) => {
       written.push({ folder, services });
@@ -84,27 +163,51 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
     },
     discoverFolders: () => options.discovered ?? [],
     itermAvailable: () => state.iterm,
-    inspect: async (path) => (path === "/work/file" ? "file" : path.startsWith("/work/") ? "dir" : "missing"),
+    inspect: async (path) => (path === "/work/file" || packageFiles.has(path) ? "file" : path.startsWith("/work/") ? "dir" : "missing"),
     launchTabs: async (tabs) => {
+      events.push("launch");
       launched.push(tabs);
       return state.launch;
     },
     stopPorts: async (ports) => {
+      events.push("stopPorts");
       stopped.push(ports);
-      ports.forEach((port) => listening.delete(port));
-      return { code: 0, stderr: "" };
+      if (state.stop.code === 0) {
+        for (const port of ports) {
+          if (state.release === "now") listening.delete(port);
+          else if (state.release === "slow") pending.set(port, 2);
+        }
+      }
+      return state.stop;
     },
     closeTabs: async (sessionNames) => {
+      events.push("closeTabs");
       closed.push(sessionNames);
       return state.close;
     },
     closeSimulator: async (platform) => {
+      events.push(`simulator:${platform}`);
       simulators.push(platform);
       return state.simulator;
     },
     confirmCommands: async (request) => {
       confirms.push(request);
       return state.allow;
+    },
+    confirmReinstall: async (request) => {
+      reinstallConfirms.push(request);
+      return options.reinstallAllow ?? true;
+    },
+    detectInstaller: async (dir, inherited) => options.installers?.[dir] ?? inherited ?? "npm",
+    portSweep: {
+      scan: async () => {
+        sweepCalls.push("scan");
+        return { targets: [...(options.sweep?.ended ?? []), ...(options.sweep?.failed ?? [])] };
+      },
+      release: async () => {
+        sweepCalls.push("release");
+        return options.sweep ?? { ended: [], failed: [] };
+      }
     },
     openUrl: async (url) => void opened.push(url),
     ...(options.detectFramework === undefined ? {} : { detectFramework: options.detectFramework }),
@@ -114,9 +217,11 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
       return options.openDocument ?? { ok: true };
     },
     vault,
-    copySecret: (secret) => void copied.push(secret),
+    copySecret: async (secret) => void copied.push(secret),
+    passcodeSource,
     now: () => time,
-    startingGraceMs: 60_000
+    startingGraceMs: 60_000,
+    portRelease: { timeoutMs: 20, pollMs: 1 }
   });
 
   const project = (localPath: string | null = "/work/app") =>
@@ -140,14 +245,20 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
     stopped,
     closed,
     simulators,
+    events,
     opened,
     documents,
     confirms,
+    reinstallConfirms,
+    sweepCalls,
     written,
     logs,
     copied,
     cipher,
     vault,
+    passcodeFiles,
+    candidates,
+    scans,
     state,
     project,
     setLoaded: (value: LoadedManifest) => void (loaded = value),
@@ -217,6 +328,32 @@ describe("run handlers: listing", () => {
 });
 
 describe("run handlers: one-click start", () => {
+  it("uses a fixed API port while allocating the frontend port dynamically", async () => {
+    const h = harness({ loaded: { status: "ok", manifest: fixedManifestOf(), hash: "f".repeat(64) } });
+    const project = h.project();
+    const target = `p:${project.id}`;
+    ok(await h.handlers.run(target, serviceAction("web", "start")));
+    assert.equal(h.launched[0]?.[0]?.command, "env PORT=5174 pnpm dev");
+    assert.equal(h.launched[0]?.[1]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
+    assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.fixedPort, 5174);
+    h.listening.add(5174);
+    h.listening.add(41001);
+    ok(await h.handlers.run(target, serviceAction("web", "restart")));
+    assert.equal(h.launched[1]?.[0]?.command, "env PORT=5174 pnpm dev");
+    assert.equal(h.launched[1]?.[1]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
+  });
+
+  it("refuses an occupied fixed port without launching or stopping its owner", async () => {
+    const h = harness({ loaded: { status: "ok", manifest: fixedManifestOf(), hash: "f".repeat(64) } });
+    const project = h.project();
+    h.listening.add(5174);
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("api", "start"));
+    assert.equal(result.ok, false);
+    assert.match(result.message, /5174.*占用/);
+    assert.deepEqual(h.launched, []);
+    assert.deepEqual(h.stopped, []);
+  });
+
   it("opens one tab per backend/frontend service in order, with ports wired together", async () => {
     const h = harness();
     const project = h.project();
@@ -274,9 +411,99 @@ describe("run handlers: one-click start", () => {
 
     assert.equal(h.launched.length, 2);
     assert.deepEqual(h.launched[1]?.map((tab) => tab.name), ["gitnrun p:1 api", "gitnrun p:1 web"]);
-    assert.match(h.launched[1]?.[0]?.command ?? "", /^kill -TERM \$\(lsof -ti tcp:41001\).*DEV_PORT=41001/);
-    assert.match(h.launched[1]?.[1]?.command ?? "", /^kill -TERM \$\(lsof -ti tcp:41002\).*PORT=41002/);
-    assert.deepEqual(h.written[1]?.services, { api: { role: "backend", port: 41001 }, web: { role: "frontend", port: 41002 } });
+    assert.equal(h.launched[1]?.[0]?.command, "env DEV_PORT=41001 FRONT=http://localhost:41002 pnpm dev");
+    assert.equal(h.launched[1]?.[1]?.command, "env PORT=41002 API=http://localhost:41001 pnpm dev");
+    assert.deepEqual(h.stopped, [[41001, 41002]]);
+    assert.deepEqual(h.closed, [["gitnrun p:1 api", "gitnrun p:1 web"]]);
+    assert.deepEqual(h.written.at(-1)?.services, { api: { role: "backend", port: 41001 }, web: { role: "frontend", port: 41002 } });
+  });
+
+  describe("restart ends the old services first", () => {
+    const startedHarness = async (options: Parameters<typeof harness>[0] = {}) => {
+      const h = harness(options);
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+      h.listening.add(41001);
+      h.listening.add(41002);
+      return { h, targetId: `p:${project.id}` };
+    };
+
+    it("stops the ports and closes the old tabs before opening the new ones", async () => {
+      const { h, targetId } = await startedHarness();
+
+      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+
+      ok(result);
+      assert.deepEqual(h.events, ["launch", "stopPorts", "closeTabs", "launch"]);
+      assert.match(result.message, /已結束 2 個服務並關閉終端機分頁：api、web，已在 iTerm2 重新開啟 2 個分頁：api、web/);
+      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["starting", "starting", "stopped"]);
+    });
+
+    it("does not open new tabs when the old services cannot be stopped", async () => {
+      const { h, targetId } = await startedHarness();
+      h.state.stop = { code: 1, stderr: "kill 失敗" };
+
+      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+      assert.match(result.message, /無法結束：kill 失敗/);
+      assert.equal(h.launched.length, 1);
+      assert.deepEqual(h.closed, []);
+    });
+
+    it("does not open new tabs when macOS refuses to close the old tabs", async () => {
+      const { h, targetId } = await startedHarness();
+      h.state.close = { code: 1, stderr: "not authorized to send apple events (-1743)" };
+
+      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
+      assert.equal(h.launched.length, 1);
+    });
+
+    it("leaves the running services alone when the user denies a changed manifest", async () => {
+      const { h, targetId } = await startedHarness();
+      h.setLoaded({ status: "ok", manifest: manifestOf(), hash: "b".repeat(64) });
+      h.state.allow = false;
+
+      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "denied"]);
+      assert.deepEqual(h.events, ["launch"]);
+      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["running", "running", "stopped"]);
+    });
+
+    it("still opens the services when nothing was running", async () => {
+      const h = harness();
+      const project = h.project();
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart"));
+
+      ok(result);
+      assert.deepEqual(h.events, ["launch"]);
+      assert.equal(h.launched[0]?.[0]?.command, "env DEV_PORT=41001 FRONT=http://localhost:41002 pnpm dev");
+    });
+
+    it("waits for a slow old service to release its port before opening new tabs", async () => {
+      const { h, targetId } = await startedHarness();
+      h.state.release = "slow";
+
+      ok(await h.handlers.run(targetId, serviceAction("web", "restart")));
+
+      assert.deepEqual(h.events, ["launch", "stopPorts", "closeTabs", "launch"]);
+      assert.equal(h.launched.length, 2);
+    });
+
+    it("does not open new tabs while an old service still holds its port", async () => {
+      const { h, targetId } = await startedHarness();
+      h.state.release = "never";
+
+      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+      assert.match(result.message, /舊服務仍占用 port 41001/);
+      assert.equal(h.launched.length, 1);
+    });
   });
 
   it("stops active services and clears their recorded ports", async () => {
@@ -434,6 +661,35 @@ describe("run handlers: one-click start", () => {
 
       assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
       assert.deepEqual(h.simulators, ["ios"]);
+    });
+
+    it("closes the old tab and the iOS simulator before restarting the iOS service, and leaves Android alone", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "restart"));
+
+      ok(result);
+      assert.deepEqual(h.events.slice(2), ["closeTabs", "simulator:ios", "launch"]);
+      assert.deepEqual(h.closed.at(-1), ["gitnrun p:1 mobile-anipurr-ios"]);
+      assert.deepEqual(h.simulators, ["ios"]);
+      assert.deepEqual(h.launched.at(-1)?.map((tab) => tab.name), ["gitnrun p:1 mobile-anipurr-ios"]);
+      assert.doesNotMatch(h.launched.at(-1)?.[0]?.command ?? "", /kill/);
+      assert.match(result.message, /並關閉 iOS 模擬器，已在 iTerm2 重新開啟 1 個分頁/);
+    });
+
+    it("does not open a new tab when the simulator cannot be closed during a restart", async () => {
+      const h = mobileHarness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      h.state.simulator = { code: 127, stderr: "找不到 xcrun" };
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "restart"));
+
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+      assert.equal(h.launched.length, 1);
     });
   });
 
@@ -652,18 +908,182 @@ describe("run handlers: open README", () => {
   });
 });
 
+describe("run handlers: reinstall dependencies", () => {
+  const reinstall: RunAction = { scope: "project", action: "reinstall" };
+  const reasonOf = (result: { ok: boolean; reason?: string }): string => (result.ok ? "" : (result.reason ?? ""));
+  const command = (manager: InstallManager): string => `rm -rf node_modules && ${manager} install`;
+
+  it("enables the button only for Node projects with iTerm2 and nothing running", async () => {
+    const none = harness({ discovered: [{ label: "bare", folder: "/work/bare" }] });
+    none.project("/work/app");
+    assert.deepEqual((await none.handlers.overview()).targets.map((target) => target.reinstall), [
+      { enabled: false, reason: "沒有 package.json，不是 Node 專案" },
+      { enabled: false, reason: "沒有 package.json，不是 Node 專案" }
+    ]);
+
+    const node = harness({ packages: ["/work/app"] });
+    node.project("/work/app");
+    assert.deepEqual((await node.handlers.overview()).targets[0]?.reinstall, { enabled: true, reason: null });
+
+    const noIterm = harness({ packages: ["/work/app"], iterm: false });
+    noIterm.project("/work/app");
+    assert.deepEqual((await noIterm.handlers.overview()).targets[0]?.reinstall, { enabled: false, reason: "找不到 iTerm2" });
+  });
+
+  it("asks first, then opens one iTerm2 tab per package folder with that folder's installer", async () => {
+    const h = harness({ packages: ["/work/app", "/work/app/api"], installers: { "/work/app": "pnpm" } });
+    const project = h.project("/work/app");
+    const result = await h.handlers.run(`p:${project.id}`, reinstall);
+    ok(result);
+    assert.deepEqual(h.reinstallConfirms, [
+      {
+        label: "app",
+        folder: "/work/app",
+        items: [
+          { dir: ".", command: command("pnpm") },
+          { dir: "api", command: command("pnpm") }
+        ]
+      }
+    ]);
+    assert.deepEqual(h.launched, [
+      [
+        { dir: "/work/app", name: `gitnrun p:${project.id} Reinstall`, command: command("pnpm") },
+        { dir: "/work/app/api", name: `gitnrun p:${project.id} Reinstall-2`, command: command("pnpm") }
+      ]
+    ]);
+    // 與啟動指令的信任無關：不問啟動確認、不結束任何 port。
+    assert.equal(h.confirms.length, 0);
+    assert.equal(h.stopped.length, 0);
+    assert.ok(h.logs.some((line) => line.includes("重裝")));
+  });
+
+  it("keeps a sub folder's own installer instead of the root's", async () => {
+    const h = harness({ packages: ["/work/app", "/work/app/api"], installers: { "/work/app": "pnpm", "/work/app/api": "yarn" } });
+    const project = h.project("/work/app");
+    ok(await h.handlers.run(`p:${project.id}`, reinstall));
+    assert.deepEqual(h.launched[0]?.map((tab) => tab.command), [command("pnpm"), command("yarn")]);
+  });
+
+  it("works without a launch manifest, using only the project folder", async () => {
+    const h = harness({ packages: ["/work/app"], loaded: { status: "missing" } });
+    const project = h.project("/work/app");
+    ok(await h.handlers.run(`p:${project.id}`, reinstall));
+    assert.deepEqual(h.launched[0]?.map((tab) => tab.dir), ["/work/app"]);
+  });
+
+  it("deletes and launches nothing when the user cancels", async () => {
+    const h = harness({ packages: ["/work/app"], reinstallAllow: false });
+    const project = h.project("/work/app");
+    const result = await h.handlers.run(`p:${project.id}`, reinstall);
+    assert.deepEqual([result.ok, reasonOf(result)], [false, "denied"]);
+    assert.equal(h.reinstallConfirms.length, 1);
+    assert.equal(h.launched.length, 0);
+  });
+
+  it("refuses while a service is starting or running, before asking anything, and works again once it ended", async () => {
+    const h = harness({ packages: ["/work/app"] });
+    const project = h.project("/work/app");
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "start")));
+
+    const starting = await h.handlers.run(`p:${project.id}`, reinstall);
+    assert.deepEqual([starting.ok, reasonOf(starting)], [false, "running"]);
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.reinstall, { enabled: false, reason: "請先結束執行中的服務" });
+
+    h.listening.add(41002);
+    const running = await h.handlers.run(`p:${project.id}`, reinstall);
+    assert.deepEqual([running.ok, reasonOf(running)], [false, "running"]);
+    assert.equal(h.reinstallConfirms.length, 0);
+
+    ok(await h.handlers.run(`p:${project.id}`, stopProject));
+    h.launched.length = 0;
+    ok(await h.handlers.run(`p:${project.id}`, reinstall));
+    assert.equal(h.launched.length, 1);
+  });
+
+  it("refuses folders without a package.json, a missing iTerm2, and unknown targets", async () => {
+    const bare = harness();
+    const first = bare.project("/work/app");
+    const noPackage = await bare.handlers.run(`p:${first.id}`, reinstall);
+    assert.deepEqual([noPackage.ok, reasonOf(noPackage)], [false, "no-package"]);
+    assert.equal(bare.reinstallConfirms.length, 0);
+
+    const noIterm = harness({ packages: ["/work/app"], iterm: false });
+    const second = noIterm.project("/work/app");
+    const missing = await noIterm.handlers.run(`p:${second.id}`, reinstall);
+    assert.deepEqual([missing.ok, reasonOf(missing)], [false, "iterm-missing"]);
+    assert.equal(noIterm.reinstallConfirms.length, 0);
+
+    const unknown = await bare.handlers.run("p:99", reinstall);
+    assert.equal(unknown.ok, false);
+  });
+
+  it("maps a denied macOS automation permission and other launch errors", async () => {
+    const denied = harness({ packages: ["/work/app"], launch: { code: 1, stderr: "execution error: Not authorized to send Apple events (-1743)" } });
+    const first = denied.project("/work/app");
+    assert.equal(reasonOf(await denied.handlers.run(`p:${first.id}`, reinstall)), "permission-denied");
+
+    const broken = harness({ packages: ["/work/app"], launch: { code: 1, stderr: "boom" } });
+    const second = broken.project("/work/app");
+    const failed = await broken.handlers.run(`p:${second.id}`, reinstall);
+    assert.deepEqual(failed, { ok: false, reason: "failed", message: "無法在 iTerm2 開啟：boom" });
+  });
+});
+
+describe("run handlers: release terminal ports", () => {
+  const swept = { ended: [{ pid: 9, command: "node", ports: [41002] }], failed: [{ pid: 10, command: "python", ports: [8000] }] };
+
+  it("lists what would be ended without ending anything", async () => {
+    const h = harness({ sweep: swept });
+    const scan = await h.handlers.scanPorts();
+    assert.deepEqual(scan.targets.map((target) => target.pid), [9, 10]);
+    assert.deepEqual(h.sweepCalls, ["scan"]);
+  });
+
+  it("forgets the services whose port was released, and keeps the others", async () => {
+    const h = harness({ sweep: swept });
+    const project = h.project();
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "start")));
+    h.listening.add(41002);
+    const stateOf = async (name: string): Promise<string | undefined> =>
+      (await h.handlers.overview()).targets[0]?.services.find((service) => service.name === name)?.state;
+    assert.equal(await stateOf("web"), "running");
+
+    // 結束程序後 port 空了；沒清記錄的話，卡片會在寬限時間內一直停在「啟動中」。
+    h.listening.delete(41002);
+    assert.equal(await stateOf("web"), "starting");
+    const result = await h.handlers.releasePorts();
+    assert.deepEqual(result, swept);
+    assert.deepEqual(h.sweepCalls, ["release"]);
+    assert.equal(await stateOf("web"), "stopped");
+    assert.equal(await stateOf("api"), "starting");
+  });
+
+  it("logs what it released and what it could not", async () => {
+    const h = harness({ sweep: swept });
+    await h.handlers.releasePorts();
+    assert.ok(h.logs.some((line) => line.includes("已釋放終端機 port") && line.includes("node(41002)")));
+    assert.ok(h.logs.some((line) => line.includes("無法結束") && line.includes("python(8000)")));
+  });
+
+  it("changes nothing when no terminal port is open", async () => {
+    const h = harness();
+    assert.deepEqual(await h.handlers.releasePorts(), { ended: [], failed: [] });
+    assert.deepEqual(h.logs, []);
+  });
+});
+
 describe("run handlers: dev account and passcode", () => {
   const PASSCODE = "dev-passcode-0042";
 
-  it("shows an empty account and an unset passcode for every target, even without a manifest", async () => {
+  it("shows an empty account and an unbound passcode source for every target, even without a manifest", async () => {
     const h = harness({ loaded: { status: "missing" } });
     const project = h.project();
     const overview = await h.handlers.overview();
-    assert.equal(overview.vaultAvailable, true);
     const [target] = overview.targets;
     assert.equal(target?.manifest, "missing");
     assert.equal(target?.account, "");
-    assert.deepEqual(target?.passcode, { name: `devpass.p${project.id}`, configured: false, state: "missing", hint: "", updatedAt: null });
+    assert.deepEqual(target?.passcodeSource, { binding: null, state: "unbound", hint: "", candidates: [] });
+    assert.deepEqual(target?.legacyPasscode, { name: `devpass.p${project.id}`, configured: false, state: "missing", hint: "", updatedAt: null });
   });
 
   it("stores the account trimmed, and clears it with an empty string", async () => {
@@ -695,55 +1115,376 @@ describe("run handlers: dev account and passcode", () => {
     assert.throws(() => h.handlers.setAccount(`p:${project.id}`, "a\nb"), UserFacingError);
   });
 
-  it("copies the saved passcode through the injected clipboard and never exposes it in the overview", async () => {
-    const h = harness();
+  const BLOOM = { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" } as const;
+
+  it("copies the password from the bound environment file, never from the vault, and keeps it out of the overview and logs", async () => {
+    const h = harness({ passcodeFiles: { "/work/app::.dev.vars": `# local\nDEBUG_AUTH_PASSWORD="${PASSCODE}"\n` } });
     const project = h.project();
     const id = `p:${project.id}`;
-    h.vault.set(`devpass.p${project.id}`, PASSCODE);
+    h.vault.set(`devpass.p${project.id}`, "old-vault-secret-0001");
+    h.handlers.bindPasscode(id, BLOOM);
     await h.handlers.copyPasscode(id);
     assert.deepEqual(h.copied, [PASSCODE]);
+
     const overview = await h.handlers.overview();
-    assert.equal(overview.targets[0]?.passcode.configured, true);
-    assert.equal(overview.targets[0]?.passcode.hint, "0042");
+    assert.deepEqual(overview.targets[0]?.passcodeSource, { binding: BLOOM, state: "ok", hint: "0042", candidates: [] });
+    assert.equal(overview.targets[0]?.legacyPasscode.configured, true);
     assert.equal(JSON.stringify(overview).includes(PASSCODE), false);
+    assert.equal(h.logs.join(" ").includes(PASSCODE), false);
   });
 
-  it("explains why a passcode cannot be copied", async () => {
+  it("reads the environment file again on every copy", async () => {
+    const h = harness({ passcodeFiles: { "/work/app::.dev.vars": "DEBUG_AUTH_PASSWORD=first-password-0001\n" } });
+    const id = `p:${h.project().id}`;
+    h.handlers.bindPasscode(id, BLOOM);
+    await h.handlers.copyPasscode(id);
+    h.passcodeFiles.set("/work/app::.dev.vars", "DEBUG_AUTH_PASSWORD=second-password-0002\n");
+    await h.handlers.copyPasscode(id);
+    assert.deepEqual(h.copied, ["first-password-0001", "second-password-0002"]);
+  });
+
+  it("explains why a password cannot be copied and never falls back to the vault", async () => {
     const h = harness();
     const project = h.project();
     const id = `p:${project.id}`;
-    await assert.rejects(h.handlers.copyPasscode(id), (error: Error) => error instanceof UserFacingError && error.message === "還沒有設定密碼");
+    h.vault.set(`devpass.p${project.id}`, "old-vault-secret-0001");
+
+    await assert.rejects(h.handlers.copyPasscode(id), (error: Error) => error instanceof UserFacingError && error.message === passcodeProblem("unbound", null));
     await assert.rejects(h.handlers.copyPasscode("p:999"), UserFacingError);
 
-    h.vault.set(`devpass.p${project.id}`, PASSCODE);
-    h.cipher.brokenCiphertexts.add(String(h.db.prepare("SELECT ciphertext FROM api_keys WHERE name = ?").get(`devpass.p${project.id}`)?.ciphertext));
-    await assert.rejects(h.handlers.copyPasscode(id), (error: Error) => error instanceof UserFacingError && /重新輸入/.test(error.message));
+    h.handlers.bindPasscode(id, BLOOM);
+    const cases: Array<[string | null, "no-file" | "no-key" | "empty"]> = [
+      [null, "no-file"],
+      ["OTHER_KEY=1\n", "no-key"],
+      ["DEBUG_AUTH_PASSWORD=\n", "empty"]
+    ];
+    for (const [text, state] of cases) {
+      if (text === null) h.passcodeFiles.delete("/work/app::.dev.vars");
+      else h.passcodeFiles.set("/work/app::.dev.vars", text);
+      await assert.rejects(h.handlers.copyPasscode(id), (error: Error) => error instanceof UserFacingError && error.message === passcodeProblem(state, BLOOM));
+      assert.equal((await h.handlers.overview()).targets[0]?.passcodeSource.state, state);
+    }
     assert.deepEqual(h.copied, []);
   });
 
-  it("reports an unavailable vault but still keeps accounts working", async () => {
+  it("binds, validates and unbinds the password source", async () => {
     const h = harness();
     const project = h.project();
+    const id = `p:${project.id}`;
+    h.handlers.bindPasscode(id, { file: "apps/edge/.dev.vars", key: "DEBUG_PASSWORD" });
+    assert.deepEqual(getPasscodeBinding(h.db, id), { file: "apps/edge/.dev.vars", key: "DEBUG_PASSWORD" });
+    // 檔案還不存在也可以先綁定。
+    assert.equal((await h.handlers.overview()).targets[0]?.passcodeSource.state, "no-file");
+
+    for (const bad of [
+      { file: "/etc/passwd", key: "DEBUG_PASSWORD" },
+      { file: "../.env", key: "DEBUG_PASSWORD" },
+      { file: "notes.txt", key: "DEBUG_PASSWORD" },
+      { file: ".env", key: "debug_password" },
+      { file: ".env", key: "VITE_DEBUG_PASSWORD" }
+    ]) {
+      assert.throws(() => h.handlers.bindPasscode(id, bad), UserFacingError, JSON.stringify(bad));
+    }
+    assert.throws(() => h.handlers.bindPasscode("p:999", BLOOM), UserFacingError);
+    assert.deepEqual(getPasscodeBinding(h.db, id), { file: "apps/edge/.dev.vars", key: "DEBUG_PASSWORD" });
+
+    h.handlers.unbindPasscode(id);
+    assert.equal(getPasscodeBinding(h.db, id), null);
+    assert.equal((await h.handlers.overview()).targets[0]?.passcodeSource.state, "unbound");
+    assert.throws(() => h.handlers.unbindPasscode("p:999"), UserFacingError);
+  });
+
+  it("opens only the bound environment file that the main process located", async () => {
+    const h = harness({ passcodeFiles: { "/work/app::.dev.vars": "DEBUG_AUTH_PASSWORD=x\n" } });
+    const id = `p:${h.project().id}`;
+    await assert.rejects(h.handlers.openPasscodeFile(id), UserFacingError);
+    h.handlers.bindPasscode(id, BLOOM);
+    await h.handlers.openPasscodeFile(id);
+    assert.deepEqual(h.documents, ["/work/app/.dev.vars"]);
+
+    h.passcodeFiles.clear();
+    await assert.rejects(h.handlers.openPasscodeFile(id), UserFacingError);
+    await assert.rejects(h.handlers.openPasscodeFile("p:999"), UserFacingError);
+    assert.deepEqual(h.documents, ["/work/app/.dev.vars"]);
+  });
+
+  it("suggests candidates only for unbound targets with a recognised framework, and reuses the scan for a while", async () => {
+    const suggestion: PasscodeBinding = { file: ".env", key: "DEBUG_PASSWORD" };
+    const h = harness({ detectFramework: async () => "Django", candidates: { "/work/app": [suggestion] } });
+    const id = `p:${h.project().id}`;
+
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, [suggestion]);
+    await h.handlers.overview();
+    assert.equal(h.scans.length, 1);
+    assert.deepEqual(h.scans[0]?.frameworks, ["Django", "Django", "Django"]);
+
+    h.advance(31_000);
+    await h.handlers.overview();
+    assert.equal(h.scans.length, 2);
+
+    h.handlers.bindPasscode(id, suggestion);
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, []);
+    assert.equal(h.scans.length, 2);
+  });
+
+  it("does not scan when no framework is recognised", async () => {
+    const h = harness({ candidates: { "/work/app": [{ file: ".env", key: "DEBUG_PASSWORD" }] } });
+    h.project();
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, []);
+    assert.equal(h.scans.length, 0);
+  });
+
+  it("migrates the two legacy projects once, and nothing else is bound by name afterwards", async () => {
+    const h = harness({
+      passcodeFiles: {
+        "/work/toBloom::.dev.vars": "DEBUG_AUTH_PASSWORD=bloom-password-0042\n",
+        "/work/stockPaw::.env": "OTHER=1\n",
+        "/work/other::.env": "DEBUG_PASSWORD=unrelated-0000\n"
+      }
+    });
+    const bloom = h.project("/work/toBloom");
+    const paw = h.project("/work/stockPaw");
+    const other = h.project("/work/other");
+    await h.handlers.overview();
+
+    assert.deepEqual(getPasscodeBinding(h.db, `p:${bloom.id}`), BLOOM);
+    // 檔案裡已經沒有原本的鍵：不綁定，改由候選偵測建議。
+    assert.equal(getPasscodeBinding(h.db, `p:${paw.id}`), null);
+    assert.equal(getPasscodeBinding(h.db, `p:${other.id}`), null);
+    await h.handlers.copyPasscode(`p:${bloom.id}`);
+    assert.deepEqual(h.copied, ["bloom-password-0042"]);
+
+    // 只遷移一次：解除綁定後不會再被依名稱綁回來。
+    h.handlers.unbindPasscode(`p:${bloom.id}`);
+    await h.handlers.overview();
+    assert.equal(getPasscodeBinding(h.db, `p:${bloom.id}`), null);
+  });
+
+  it("waits for a target to exist before marking the migration as done", async () => {
+    const h = harness({ passcodeFiles: { "/work/toBloom::.dev.vars": "DEBUG_AUTH_PASSWORD=bloom-password-0042\n" } });
+    assert.deepEqual((await h.handlers.overview()).targets, []);
+    const bloom = h.project("/work/toBloom");
+    await h.handlers.overview();
+    assert.deepEqual(getPasscodeBinding(h.db, `p:${bloom.id}`), BLOOM);
+  });
+
+  it("keeps copying from an environment file when the vault is unavailable", async () => {
+    const h = harness({ passcodeFiles: { "/work/app::.dev.vars": "DEBUG_AUTH_PASSWORD=env-password-0042\n" } });
+    const project = h.project();
     h.cipher.available = false;
-    assert.equal((await h.handlers.overview()).vaultAvailable, false);
+    h.handlers.bindPasscode(`p:${project.id}`, BLOOM);
+    await h.handlers.copyPasscode(`p:${project.id}`);
+    assert.deepEqual(h.copied, ["env-password-0042"]);
     h.handlers.setAccount(`p:${project.id}`, "alice");
     assert.equal((await h.handlers.overview()).targets[0]?.account, "alice");
+  });
+
+  it("clears a leftover vault password only through the existing secret deletion", async () => {
+    const h = harness();
+    const project = h.project();
+    h.vault.set(`devpass.p${project.id}`, "old-vault-secret-0001");
+    assert.equal((await h.handlers.overview()).targets[0]?.legacyPasscode.configured, true);
+    h.vault.delete(`devpass.p${project.id}`);
+    assert.equal((await h.handlers.overview()).targets[0]?.legacyPasscode.configured, false);
   });
 
   it("removes the account and passcode together with an added folder, so a reused id starts empty", async () => {
     const h = harness();
     await h.handlers.addFolder("/work/extra");
     h.handlers.setAccount("f:1", "bob");
+    h.handlers.bindPasscode("f:1", BLOOM);
     h.vault.set("devpass.f1", PASSCODE);
     h.handlers.removeFolder("f:1");
     assert.equal(getRunAccount(h.db, "f:1"), "");
+    assert.equal(getPasscodeBinding(h.db, "f:1"), null);
     assert.equal(h.vault.has("devpass.f1"), false);
 
     await h.handlers.addFolder("/work/another");
     const [target] = (await h.handlers.overview()).targets;
     assert.equal(target?.id, "f:1");
     assert.equal(target?.account, "");
-    assert.equal(target?.passcode.configured, false);
+    assert.equal(target?.legacyPasscode.configured, false);
+    assert.equal(target?.passcodeSource.state, "unbound");
+  });
+});
+
+describe("passcode source: environment files", () => {
+  const withDir = async (work: (root: string) => Promise<void>): Promise<void> => {
+    const root = mkdtempSync(join(tmpdir(), "gitnrun-passcode-"));
+    try {
+      await work(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("validates file names and keys", () => {
+    for (const file of [".env", ".env.local", ".env.development", ".env.development.local", ".dev.vars", "apps/edge/.dev.vars", "a/b/c/d/.env"]) {
+      assert.equal(isPasscodeFile(file), true, file);
+    }
+    for (const file of ["", "/abs/.env", "../.env", "a/../.env", "a//.env", "./.env", "notes.txt", ".env.production", "a\\.env", ".env\n", "a/b/c/d/e/.env", `${"a/".repeat(120)}.env`, 42, null]) {
+      assert.equal(isPasscodeFile(file), false, String(file));
+    }
+    for (const key of ["DEBUG_PASSWORD", "DEBUG_AUTH_PASSWORD", "_X1"]) assert.equal(isPasscodeKey(key), true, key);
+    for (const key of ["", "debug_password", "1ABC", "A-B", "A".repeat(65), "NEXT_PUBLIC_DEBUG_PASSWORD", "VITE_DEBUG_PASSWORD", "NUXT_PUBLIC_X", "PUBLIC_X", "EXPO_PUBLIC_X", 7]) {
+      assert.equal(isPasscodeKey(key), false, String(key));
+    }
+    assert.deepEqual(normalizePasscodeBinding({ file: ".env", key: "DEBUG_PASSWORD", extra: 1 }), { file: ".env", key: "DEBUG_PASSWORD" });
+    assert.equal(normalizePasscodeBinding({ file: ".env" }), null);
+    assert.equal(normalizePasscodeBinding(null), null);
+    assert.equal(normalizePasscodeBinding([".env", "DEBUG_PASSWORD"]), null);
+  });
+
+  it("parses dotenv text: export, quotes, trailing comments, empty values, duplicates and comment lines", () => {
+    const entries = parseEnvText(
+      [
+        "# DEBUG_PASSWORD=from-comment",
+        "export A=exported",
+        'B="double quoted # not a comment"',
+        "C='single quoted'",
+        "D=plain # trailing comment",
+        "E=",
+        "F=first",
+        "F=last",
+        "G=with#hash",
+        "  H = spaced  ",
+        "not a pair",
+        "CRLF=line\r"
+      ].join("\r\n")
+    );
+    assert.equal(entries.get("DEBUG_PASSWORD"), undefined);
+    assert.equal(entries.get("A"), "exported");
+    assert.equal(entries.get("B"), "double quoted # not a comment");
+    assert.equal(entries.get("C"), "single quoted");
+    assert.equal(entries.get("D"), "plain");
+    assert.equal(entries.get("E"), "");
+    assert.equal(entries.get("F"), "last");
+    assert.equal(entries.get("G"), "with#hash");
+    assert.equal(entries.get("H"), "spaced");
+    assert.equal(interpretEnvText("E=\n", "E").state, "empty");
+    assert.equal(interpretEnvText("A=1\n", "B").state, "no-key");
+    assert.deepEqual(interpretEnvText("A=1\n", "A"), { state: "ok", value: "1" });
+  });
+
+  it("reads a bound key and reports a missing file, key or value", async () => {
+    await withDir(async (root) => {
+      mkdirSync(join(root, "apps/edge"), { recursive: true });
+      writeFileSync(join(root, ".env"), "DEBUG_PASSWORD='paw-test-password'\nEMPTY=\n");
+      writeFileSync(join(root, "apps/edge/.dev.vars"), "DEBUG_AUTH_PASSWORD=edge-password\n");
+      assert.deepEqual(await fsPasscodeSource.read(root, { file: ".env", key: "DEBUG_PASSWORD" }), { state: "ok", value: "paw-test-password" });
+      assert.deepEqual(await fsPasscodeSource.read(root, { file: "apps/edge/.dev.vars", key: "DEBUG_AUTH_PASSWORD" }), { state: "ok", value: "edge-password" });
+      assert.equal((await fsPasscodeSource.read(root, { file: ".env", key: "EMPTY" })).state, "empty");
+      assert.equal((await fsPasscodeSource.read(root, { file: ".env", key: "MISSING" })).state, "no-key");
+      assert.equal((await fsPasscodeSource.read(root, { file: ".env.local", key: "DEBUG_PASSWORD" })).state, "no-file");
+      assert.equal((await fsPasscodeSource.read(join(root, "nope"), { file: ".env", key: "DEBUG_PASSWORD" })).state, "no-file");
+      assert.equal(await fsPasscodeSource.locate(root, { file: ".env.local", key: "X" }), null);
+      assert.ok((await fsPasscodeSource.locate(root, { file: ".env", key: "X" }))?.endsWith("/.env"));
+    });
+  });
+
+  it("refuses files that are not safe to read", async () => {
+    await withDir(async (root) => {
+      const project = join(root, "project");
+      mkdirSync(join(project, "dir"), { recursive: true });
+      mkdirSync(join(project, ".env.local"));
+      writeFileSync(join(root, "outside.txt"), "DEBUG_PASSWORD=outside-secret\n");
+      symlinkSync(join(root, "outside.txt"), join(project, ".env"));
+      writeFileSync(join(project, ".dev.vars"), `DEBUG_PASSWORD=${"x".repeat(70 * 1024)}\n`);
+      writeFileSync(join(project, "inside.txt"), "DEBUG_PASSWORD=inside\n");
+      symlinkSync(join(project, "inside.txt"), join(project, "dir/.env"));
+
+      const binding = (file: string): PasscodeBinding => ({ file, key: "DEBUG_PASSWORD" });
+      assert.deepEqual(await fsPasscodeSource.read(project, binding(".env")), { state: "unsafe", value: null });
+      assert.deepEqual(await fsPasscodeSource.read(project, binding(".env.local")), { state: "unsafe", value: null });
+      assert.deepEqual(await fsPasscodeSource.read(project, binding(".dev.vars")), { state: "unsafe", value: null });
+      assert.deepEqual(await fsPasscodeSource.read(project, binding("notes.txt")), { state: "unsafe", value: null });
+      assert.equal(await fsPasscodeSource.locate(project, binding(".env")), null);
+      // 連結指到專案內的檔案是可以的，但檔名仍要在白名單內，真實檔名不影響。
+      assert.deepEqual(await fsPasscodeSource.read(project, binding("dir/.env")), { state: "ok", value: "inside" });
+    });
+  });
+
+  it("chooses the files to scan from the recognised frameworks", () => {
+    assert.deepEqual(passcodeScanFiles(["Hono"]), [".env", ".env.local", ".dev.vars"]);
+    assert.deepEqual(passcodeScanFiles(["Django"]), [".env", ".dev.vars"]);
+    assert.deepEqual(passcodeScanFiles(["Next.js", "Django"]), [".env.local", ".env.development.local", ".env.development", ".env", ".dev.vars"]);
+    assert.deepEqual(passcodeScanFiles(["Flutter"]), []);
+    assert.deepEqual(passcodeScanFiles(["Expo", "Electron", "Tauri"]), []);
+    assert.deepEqual(passcodeScanFiles([null]), []);
+    assert.deepEqual(passcodeScanFiles([]), []);
+    assert.deepEqual(passcodeScanFiles(["Flutter", "Fastify"]), [".env", ".env.local", ".dev.vars"]);
+  });
+
+  it("picks debug password keys only", () => {
+    for (const key of ["DEBUG_AUTH_PASSWORD", "DEBUG_PASSWORD", "DEV_PASSWORD", "LOCAL_ADMIN_PWD", "APP_DEBUG_PASSCODE"]) {
+      assert.equal(isPasscodeCandidateKey(key), true, key);
+    }
+    for (const key of ["DATABASE_PASSWORD", "API_KEY", "DEBUG_USERNAME", "DEBUG", "PASSWORD", "NEXT_PUBLIC_DEBUG_PASSWORD", "DEVICE_PASSWORD"]) {
+      assert.equal(isPasscodeCandidateKey(key), false, key);
+    }
+  });
+
+  it("finds candidates per framework, in the root, service folders and workspace folders", async () => {
+    await withDir(async (root) => {
+      // Worker：.dev.vars 在根目錄。
+      const worker = join(root, "worker");
+      mkdirSync(worker);
+      writeFileSync(join(worker, ".dev.vars"), "APP_JWT_SECRET=x\nDEBUG_AUTH_PASSWORD=\n");
+      assert.deepEqual(await fsPasscodeSource.scan(worker, { frameworks: ["Hono"], serviceDirs: [worker] }), [{ file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" }]);
+
+      // Django：根目錄 .env；DATABASE_PASSWORD 不是候選。
+      const django = join(root, "django");
+      mkdirSync(django);
+      writeFileSync(join(django, ".env"), "DATABASE_PASSWORD=db\nDEBUG_PASSWORD=dev\n");
+      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Django"], serviceDirs: [django] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
+
+      // 多服務：根目錄 .env 與 apps/edge/.dev.vars 都列出，服務目錄不重複。
+      const multi = join(root, "multi");
+      mkdirSync(join(multi, "apps/edge"), { recursive: true });
+      mkdirSync(join(multi, "apps/api"), { recursive: true });
+      writeFileSync(join(multi, ".env"), "DEBUG_PASSWORD=root\n");
+      writeFileSync(join(multi, "apps/edge/.dev.vars"), "DEBUG_AUTH_PASSWORD=edge\n");
+      writeFileSync(join(multi, "apps/api/.env"), "DEV_PASSWORD=api\n");
+      const found = await fsPasscodeSource.scan(multi, { frameworks: ["Django", "Hono"], serviceDirs: [join(multi, "apps/api"), join(multi, "apps/api")] });
+      assert.deepEqual(
+        found.map((candidate) => `${candidate.file}:${candidate.key}`).sort(),
+        ["apps/api/.env:DEV_PASSWORD", "apps/edge/.dev.vars:DEBUG_AUTH_PASSWORD", ".env:DEBUG_PASSWORD"].sort()
+      );
+
+      // 公開前綴、建置輸出、用戶端程式與辨識不出來的框架都不會被建議。
+      const web = join(root, "web");
+      mkdirSync(join(web, "dist"), { recursive: true });
+      writeFileSync(join(web, ".env.local"), "NEXT_PUBLIC_DEBUG_PASSWORD=public\n");
+      writeFileSync(join(web, "dist/.dev.vars"), "DEBUG_AUTH_PASSWORD=build-copy\n");
+      assert.deepEqual(await fsPasscodeSource.scan(web, { frameworks: ["Next.js"], serviceDirs: [web] }), []);
+      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Flutter"], serviceDirs: [django] }), []);
+      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: [null], serviceDirs: [django] }), []);
+      // 服務工作目錄跳出專案資料夾時忽略。
+      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Django"], serviceDirs: [worker] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
+    });
+  });
+
+  it("knows the two legacy projects by folder name only", () => {
+    assert.deepEqual(legacyPasscodeBinding("/Users/me/toBloom"), { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" });
+    assert.deepEqual(legacyPasscodeBinding("/Users/me/stockPaw"), { file: ".env", key: "DEBUG_PASSWORD" });
+    assert.equal(legacyPasscodeBinding("/Users/me/other"), null);
+  });
+
+  it("ignores corrupted bindings in the settings table", () => {
+    const db = createTestDb();
+    setSetting(db, "run.passcodeSources", {
+      "p:1": { file: ".env", key: "DEBUG_PASSWORD" },
+      "p:2": { file: "../.env", key: "DEBUG_PASSWORD" },
+      "p:3": { file: ".env", key: "lowercase" },
+      "x:4": { file: ".env", key: "DEBUG_PASSWORD" },
+      "p:5": "oops"
+    });
+    assert.deepEqual(getPasscodeBinding(db, "p:1"), { file: ".env", key: "DEBUG_PASSWORD" });
+    for (const id of ["p:2", "p:3", "x:4", "p:5", "p:6"]) assert.equal(getPasscodeBinding(db, id), null, id);
+    setPasscodeBinding(db, "p:7", { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" });
+    setPasscodeBinding(db, "p:1", null);
+    assert.equal(getPasscodeBinding(db, "p:1"), null);
+    assert.deepEqual(getPasscodeBinding(db, "p:7"), { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" });
   });
 });
 

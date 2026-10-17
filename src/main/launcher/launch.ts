@@ -70,7 +70,7 @@ export const launchTerminal = async (deps: LaunchDeps, requestedFolder: string):
   const result = await deps.exec(file, args);
   if (result.code !== 0) {
     if (AUTOMATION_DENIED.test(result.stderr)) {
-      return fail("permission-denied", "macOS 沒有允許 devRun 控制終端機。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
+      return fail("permission-denied", "macOS 沒有允許 GitNRun 控制終端機。請到「系統設定 → 隱私權與安全性 → 自動化」開啟後再試一次。");
     }
     return fail("failed", `無法開啟終端機：${redactSecrets(result.stderr.trim()).slice(0, ERROR_TEXT_MAX) || "未知錯誤"}`);
   }
