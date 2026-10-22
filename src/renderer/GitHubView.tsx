@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isIssueSkippedFolder, rankByChangedFiles, type GitLiteOverview, type GitLiteProject } from "@shared/git-lite";
-import { errorMessage, formatRelative } from "@shared/format";
+import { errorMessage } from "@shared/format";
 import { useProjectHead } from "./hooks";
 
 const REFRESH_MS = 30_000;
@@ -90,7 +90,7 @@ export const GitHubView = ({ onOpenSettings }: { onOpenSettings: () => void }) =
                     <a href={issue.url} target="_blank" rel="noreferrer">
                       #{issue.number} {issue.title}
                     </a>
-                    <span className="muted"> {issue.author} · {issue.updatedAt ? formatRelative(issue.updatedAt) : "未知時間"}</span>
+                    <span className="muted"> {issue.author}</span>
                   </li>
                 ))}
               </ul>

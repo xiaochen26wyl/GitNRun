@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
   MAX_PASSCODE_ENV_BYTES,
   isPasscodeFile,
@@ -20,8 +20,6 @@ export interface PasscodeFileRead {
 }
 
 export interface PasscodeScanInput {
-  /** 各服務偵測到的框架；辨識不出來為 null。 */
-  frameworks: ReadonlyArray<string | null>;
   /** 各服務工作目錄的絕對路徑。 */
   serviceDirs: readonly string[];
 }
@@ -109,34 +107,15 @@ export const readPasscode = async (folder: string, binding: PasscodeBinding): Pr
 };
 
 // ---------------------------------------------------------------------------
-// 候選偵測：依框架決定掃哪些檔案，再用鍵名樣式挑出像 Debug 密碼的鍵
+// 候選偵測：所有專案掃同一份環境檔清單，再用鍵名樣式挑出像 Debug 密碼的鍵
 // ---------------------------------------------------------------------------
 
-const CLIENT_FRAMEWORKS = new Set(["Flutter", "Expo", "Electron", "Tauri"]);
-const FILES_BY_FRAMEWORK = new Map<string, readonly string[]>([
-  ...["Next.js", "Nuxt", "Astro", "Remix", "SvelteKit", "React", "Vue", "Svelte", "Vite"].map(
-    (name): [string, readonly string[]] => [name, [".env.local", ".env.development.local", ".env.development", ".env"]]
-  ),
-  ...["Django", "FastAPI", "Flask"].map((name): [string, readonly string[]] => [name, [".env"]]),
-  ...["Express", "Fastify", "Hono", "NestJS", "Koa"].map((name): [string, readonly string[]] => [name, [".env", ".env.local"]])
-]);
+/** 所有專案一律掃同一份清單，順序即優先順序；.dev.vars 是 Cloudflare Worker 用的。 */
+const PASSCODE_SCAN_FILES: readonly string[] = [".env.local", ".env.development.local", ".env.development", ".env", ".dev.vars"];
 const WORKSPACE_DIRS = ["apps", "packages", "services"] as const;
 const MAX_CANDIDATES = 8;
 const CANDIDATE_SUFFIX = /(?:PASSWORD|PASSCODE|PWD)$/;
 const CANDIDATE_SCOPE = /(?:^|_)(?:DEBUG|DEV|LOCAL)_/;
-
-/** 要掃描的環境檔名稱，順序即優先順序；用戶端程式與辨識不出來的框架不自動掃描。 */
-export const passcodeScanFiles = (frameworks: ReadonlyArray<string | null>): string[] => {
-  const files: string[] = [];
-  for (const framework of frameworks) {
-    if (framework === null || CLIENT_FRAMEWORKS.has(framework)) continue;
-    for (const file of FILES_BY_FRAMEWORK.get(framework) ?? []) {
-      if (!files.includes(file)) files.push(file);
-    }
-  }
-  // Cloudflare Worker 用 .dev.vars；只要有辨識出的伺服器／網站框架就順便看一眼。
-  return files.length > 0 ? [...files, ".dev.vars"] : files;
-};
 
 export const isPasscodeCandidateKey = (key: string): boolean =>
   isPasscodeKey(key) && CANDIDATE_SUFFIX.test(key) && CANDIDATE_SCOPE.test(key);
@@ -159,11 +138,9 @@ const scanDirectories = async (folder: string, serviceDirs: readonly string[]): 
 };
 
 export const scanPasscodeCandidates = async (folder: string, input: PasscodeScanInput): Promise<PasscodeBinding[]> => {
-  const files = passcodeScanFiles(input.frameworks);
-  if (files.length === 0) return [];
   const candidates: PasscodeBinding[] = [];
   for (const dir of await scanDirectories(folder, input.serviceDirs)) {
-    for (const name of files) {
+    for (const name of PASSCODE_SCAN_FILES) {
       const file = dir === "" ? name : `${dir}/${name}`;
       if (!isPasscodeFile(file)) continue;
       const read = await readEnvFile(folder, file);
@@ -184,14 +161,3 @@ export const fsPasscodeSource: PasscodeSourceReader = {
     return "path" in located ? located.path : null;
   }
 };
-
-// ---------------------------------------------------------------------------
-// 舊版寫死的兩個專案：只用來做一次性遷移，之後不再依資料夾名稱判斷
-// ---------------------------------------------------------------------------
-
-const LEGACY_BINDINGS: Readonly<Record<string, PasscodeBinding>> = {
-  tobloom: { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" },
-  stockpaw: { file: ".env", key: "DEBUG_PASSWORD" }
-};
-
-export const legacyPasscodeBinding = (folder: string): PasscodeBinding | null => LEGACY_BINDINGS[basename(folder).toLowerCase()] ?? null;

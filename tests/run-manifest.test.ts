@@ -22,7 +22,7 @@ import {
   validateManifest,
   type RunManifest
 } from "@shared/run";
-import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
+import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, iosDeviceIdOf, iosRunScript, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
 import { simulatorShutdownCommand } from "@main/run/runtime";
 import { hasTrustedBefore, isRunTrusted, trustRunManifest, addRunFolder, listRunFolders, removeRunFolder } from "@main/run/store";
 import { createTestDb } from "./helpers/db";
@@ -433,6 +433,21 @@ describe("loadManifest", () => {
     assert.deepEqual(result.status === "ok" ? selectServices(result.manifest, { service: "flutter-android" }).map((item) => item.name) : [], ["flutter-android"]);
   });
 
+  it("binds the iOS service to the simulator named in .gitnrun/ios-device and falls back to the default otherwise", async () => {
+    const udid = "11111111-2222-3333-4444-555555555555";
+    const pick = async (content: string | null) => {
+      const result = await loadManifest("/work/app", fakeFs({ "/work/app/pubspec.yaml": "name: a\n", ...(content === null ? {} : { "/work/app/.gitnrun/ios-device": content }) }));
+      assert.equal(result.status, "ok");
+      return result.status === "ok" ? result.manifest.services.find((item) => item.name === "flutter-ios")?.command ?? [] : [];
+    };
+    assert.deepEqual(await pick(`${udid}\n`), ["zsh", "-lc", iosRunScript(udid)]);
+    assert.equal(iosDeviceIdOf(await pick(`${udid}\n`)), udid);
+    assert.deepEqual(await pick("not-a-udid; rm -rf /"), ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT]);
+    assert.deepEqual(await pick(null), ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT]);
+    assert.throws(() => iosRunScript("x; reboot"));
+    assert.equal(iosDeviceIdOf(["pnpm", "run", "dev"]), null);
+  });
+
   it("does not read a manifest from the retired folder name", async () => {
     const retiredFile = `/work/app/.${["push", "watch"].join("")}/run.json`;
     assert.deepEqual(await loadManifest("/work/app", fakeFs({ [retiredFile]: good }, {}, ["/work/app", "/work/app/api"])), { status: "missing" });
@@ -582,6 +597,10 @@ describe("mobile services share one row", () => {
     const ios = simulatorShutdownCommand("ios");
     const android = simulatorShutdownCommand("android");
     assert.match(ios, /xcrun simctl shutdown booted/);
+    const udid = "11111111-2222-3333-4444-555555555555";
+    assert.match(simulatorShutdownCommand("ios", udid), new RegExp(`xcrun simctl shutdown ${udid}$`));
+    assert.doesNotMatch(simulatorShutdownCommand("ios", udid), /shutdown booted/);
+    assert.throws(() => simulatorShutdownCommand("ios", "x; reboot"));
     assert.match(android, /emu kill/);
     assert.notEqual(ios, android);
     assert.equal(simulatorShutdownCommand("ios"), ios);

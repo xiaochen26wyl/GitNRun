@@ -20,15 +20,14 @@ import { addProject } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { ItermTab } from "@main/launcher/osascript";
 import type { PortSweepResult } from "@shared/port-sweep";
+import type { StaleProcess } from "@shared/stale-process";
 import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest } from "@main/run/handlers";
-import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, type LoadedManifest } from "@main/run/manifest";
+import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, iosRunScript, type LoadedManifest } from "@main/run/manifest";
 import {
   fsPasscodeSource,
   interpretEnvText,
   isPasscodeCandidateKey,
-  legacyPasscodeBinding,
   parseEnvText,
-  passcodeScanFiles,
   type PasscodeSourceReader
 } from "@main/run/passcode-source";
 import { getPasscodeBinding, getRunAccount, isRunTrusted, setPasscodeBinding } from "@main/run/store";
@@ -88,7 +87,9 @@ const mobileManifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult; portsFiles?: Record<string, Record<string, number>> } = {}) => {
+const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult; portsFiles?: Record<string, Record<string, number>> } = {}, extra: { earlyExitCheckMs?: number } = {}) => {
+  /** 資料夾裡目前的殘留程序；結束後清空。 */
+  const staleState = { list: [] as StaleProcess[], allow: true, ended: [] as number[][], confirms: 0, failEnd: false, releases: [] as Array<{ service: string; ports: number[] }> };
   const db = createTestDb();
   /** 有 package.json 的資料夾（絕對路徑）。 */
   const packageFiles = new Set((options.packages ?? []).map((dir) => `${dir}/package.json`));
@@ -103,6 +104,7 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
   const stopped: number[][] = [];
   const closed: string[][] = [];
   const simulators: MobilePlatform[] = [];
+  const simulatorDevices: (string | null | undefined)[] = [];
   /** 外部動作發生的先後：launch、stopPorts、closeTabs、simulator:<平台>。 */
   const events: string[] = [];
   /** 結束後還要被探測幾次才會釋放的 port（模擬收尾較慢的程序）。 */
@@ -114,14 +116,14 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
   /** 環境檔內容：鍵是「資料夾::相對路徑」；讀取用真正的 dotenv 解析。 */
   const passcodeFiles = new Map<string, string>(Object.entries(options.passcodeFiles ?? {}));
   const candidates: Record<string, PasscodeBinding[]> = { ...(options.candidates ?? {}) };
-  const scans: Array<{ folder: string; frameworks: Array<string | null> }> = [];
+  const scans: Array<{ folder: string; serviceDirs: string[] }> = [];
   const passcodeSource: PasscodeSourceReader = {
     read: async (folder, binding) => {
       const text = passcodeFiles.get(`${folder}::${binding.file}`);
       return text === undefined ? { state: "no-file", value: null } : interpretEnvText(text, binding.key);
     },
     scan: async (folder, input) => {
-      scans.push({ folder, frameworks: [...input.frameworks] });
+      scans.push({ folder, serviceDirs: [...input.serviceDirs] });
       return candidates[folder] ?? [];
     },
     locate: async (folder, binding) => (passcodeFiles.has(`${folder}::${binding.file}`) ? `${folder}/${binding.file}` : null)
@@ -186,9 +188,10 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
       closed.push(sessionNames);
       return state.close;
     },
-    closeSimulator: async (platform) => {
+    closeSimulator: async (platform, deviceId) => {
       events.push(`simulator:${platform}`);
       simulators.push(platform);
+      simulatorDevices.push(deviceId);
       return state.simulator;
     },
     confirmCommands: async (request) => {
@@ -210,6 +213,24 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
         return options.sweep ?? { ended: [], failed: [] };
       }
     },
+    staleProcesses: {
+      scan: async () => [...staleState.list],
+      end: async (list) => {
+        staleState.ended.push(list.map((item) => item.pid));
+        if (staleState.failEnd) return { failed: [...list] };
+        staleState.list = [];
+        return { failed: [] };
+      }
+    },
+    confirmStale: async () => {
+      staleState.confirms += 1;
+      return staleState.allow;
+    },
+    confirmRelease: async (request) => {
+      staleState.releases.push({ service: request.service, ports: request.ports });
+      return staleState.allow;
+    },
+    earlyExitCheckMs: extra.earlyExitCheckMs ?? 0,
     openUrl: async (url) => void opened.push(url),
     ...(options.detectFramework === undefined ? {} : { detectFramework: options.detectFramework }),
     findReadme: (folder) => options.readmes?.[folder] ?? null,
@@ -241,11 +262,13 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
   return {
     db,
     handlers,
+    staleState,
     listening,
     launched,
     stopped,
     closed,
     simulators,
+    simulatorDevices,
     events,
     opened,
     documents,
@@ -668,6 +691,21 @@ describe("run handlers: one-click start", () => {
       ok(await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "stop")));
 
       assert.deepEqual(h.simulators, ["android"]);
+    });
+
+    it("shuts down only the simulator bound to the stopped service", async () => {
+      const udid = "11111111-2222-3333-4444-555555555555";
+      const manifest = mobileManifestOf();
+      const bound: RunManifest = {
+        ...manifest,
+        services: manifest.services.map((spec) => (spec.name === "mobile-anipurr-ios" ? { ...spec, command: ["zsh", "-lc", iosRunScript(udid)] } : spec))
+      };
+      const h = harness({ loaded: { status: "ok", manifest: bound, hash: "m".repeat(64) } });
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+
+      assert.deepEqual(h.simulatorDevices, [udid]);
     });
 
     it("leaves simulators alone when an ordinary service is ended", async () => {
@@ -1273,64 +1311,97 @@ describe("run handlers: dev account and passcode", () => {
     assert.deepEqual(h.documents, ["/work/app/.dev.vars"]);
   });
 
-  it("suggests candidates only for unbound targets with a recognised framework, and reuses the scan for a while", async () => {
-    const suggestion: PasscodeBinding = { file: ".env", key: "DEBUG_PASSWORD" };
-    const h = harness({ detectFramework: async () => "Django", candidates: { "/work/app": [suggestion] } });
+  it("lists several candidates for the user to choose, and reuses the scan for a while", async () => {
+    const suggestions: PasscodeBinding[] = [{ file: ".env", key: "DEBUG_PASSWORD" }, { file: "apps/edge/.dev.vars", key: "DEBUG_AUTH_PASSWORD" }];
+    const h = harness({ candidates: { "/work/app": suggestions } });
     const id = `p:${h.project().id}`;
 
-    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, [suggestion]);
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, suggestions);
+    assert.equal(getPasscodeBinding(h.db, id), null);
     await h.handlers.overview();
     assert.equal(h.scans.length, 1);
-    assert.deepEqual(h.scans[0]?.frameworks, ["Django", "Django", "Django"]);
 
     h.advance(31_000);
     await h.handlers.overview();
     assert.equal(h.scans.length, 2);
 
-    h.handlers.bindPasscode(id, suggestion);
+    h.handlers.bindPasscode(id, suggestions[0] as PasscodeBinding);
     assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, []);
     assert.equal(h.scans.length, 2);
   });
 
-  it("does not scan when no framework is recognised", async () => {
-    const h = harness({ candidates: { "/work/app": [{ file: ".env", key: "DEBUG_PASSWORD" }] } });
-    h.project();
-    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource.candidates, []);
-    assert.equal(h.scans.length, 0);
+  it("scans every target the same way, whatever the framework or manifest", async () => {
+    const found: PasscodeBinding = { file: ".env", key: "DEBUG_PASSWORD" };
+    const noFramework = harness({ candidates: { "/work/app": [found] }, passcodeFiles: { "/work/app::.env": "DEBUG_PASSWORD=plain-0001\n" } });
+    noFramework.project();
+    assert.equal((await noFramework.handlers.overview()).targets[0]?.passcodeSource.state, "ok");
+    assert.equal(noFramework.scans.length, 1);
+
+    const noManifest = harness({ loaded: { status: "missing" }, candidates: { "/work/app": [found] }, passcodeFiles: { "/work/app::.env": "DEBUG_PASSWORD=plain-0002\n" } });
+    noManifest.project();
+    assert.equal((await noManifest.handlers.overview()).targets[0]?.passcodeSource.state, "ok");
   });
 
-  it("migrates the two legacy projects once, and nothing else is bound by name afterwards", async () => {
+  it("binds a single candidate automatically, and only keeps it until the user releases it", async () => {
+    const found: PasscodeBinding = { file: ".env", key: "DEBUG_PASSWORD" };
+    const h = harness({ candidates: { "/work/app": [found] }, passcodeFiles: { "/work/app::.env": "DEBUG_PASSWORD=auto-pass-0042\n" } });
+    const id = `p:${h.project().id}`;
+
+    assert.deepEqual((await h.handlers.overview()).targets[0]?.passcodeSource, { binding: found, state: "ok", hint: "0042", candidates: [] });
+    assert.deepEqual(getPasscodeBinding(h.db, id), found);
+    await h.handlers.copyPasscode(id);
+    assert.deepEqual(h.copied, ["auto-pass-0042"]);
+
+    h.handlers.unbindPasscode(id);
+    await h.handlers.recheckPasscode(id);
+    const released = (await h.handlers.overview()).targets[0]?.passcodeSource;
+    assert.deepEqual(released, { binding: null, state: "unbound", hint: "", candidates: [found] });
+    assert.equal(getPasscodeBinding(h.db, id), null);
+
+    // 手動指定後再解除前不受影響；再次手動綁定會解除封鎖。
+    h.handlers.bindPasscode(id, found);
+    assert.deepEqual(getPasscodeBinding(h.db, id), found);
+  });
+
+  it("does not let one target's release stop another from being bound automatically", async () => {
+    const found: PasscodeBinding = { file: ".env", key: "DEBUG_PASSWORD" };
     const h = harness({
+      candidates: { "/work/a": [found], "/work/b": [found] },
+      passcodeFiles: { "/work/a::.env": "DEBUG_PASSWORD=aaaa-0001\n", "/work/b::.env": "DEBUG_PASSWORD=bbbb-0002\n" }
+    });
+    const a = h.project("/work/a");
+    h.handlers.unbindPasscode(`p:${a.id}`);
+    const b = h.project("/work/b");
+    await h.handlers.overview();
+    assert.equal(getPasscodeBinding(h.db, `p:${a.id}`), null);
+    assert.deepEqual(getPasscodeBinding(h.db, `p:${b.id}`), found);
+  });
+
+  it("recheck makes the next overview scan again instead of using the cache", async () => {
+    const h = harness({ candidates: { "/work/app": [] } });
+    const id = `p:${h.project().id}`;
+    await h.handlers.overview();
+    await h.handlers.overview();
+    assert.equal(h.scans.length, 1);
+    h.handlers.recheckPasscode(id);
+    await h.handlers.overview();
+    assert.equal(h.scans.length, 2);
+    assert.throws(() => h.handlers.recheckPasscode("p:999"), UserFacingError);
+  });
+
+  it("detects the formerly hard-coded projects without any folder-name rule", async () => {
+    const h = harness({
+      candidates: { "/work/toBloom": [BLOOM], "/work/stockPaw": [{ file: ".env", key: "DEBUG_PASSWORD" }] },
       passcodeFiles: {
         "/work/toBloom::.dev.vars": "DEBUG_AUTH_PASSWORD=bloom-password-0042\n",
-        "/work/stockPaw::.env": "OTHER=1\n",
-        "/work/other::.env": "DEBUG_PASSWORD=unrelated-0000\n"
+        "/work/stockPaw::.env": "DEBUG_PASSWORD=paw-password-0007\n"
       }
     });
     const bloom = h.project("/work/toBloom");
     const paw = h.project("/work/stockPaw");
-    const other = h.project("/work/other");
-    await h.handlers.overview();
-
-    assert.deepEqual(getPasscodeBinding(h.db, `p:${bloom.id}`), BLOOM);
-    // 檔案裡已經沒有原本的鍵：不綁定，改由候選偵測建議。
-    assert.equal(getPasscodeBinding(h.db, `p:${paw.id}`), null);
-    assert.equal(getPasscodeBinding(h.db, `p:${other.id}`), null);
-    await h.handlers.copyPasscode(`p:${bloom.id}`);
-    assert.deepEqual(h.copied, ["bloom-password-0042"]);
-
-    // 只遷移一次：解除綁定後不會再被依名稱綁回來。
-    h.handlers.unbindPasscode(`p:${bloom.id}`);
-    await h.handlers.overview();
-    assert.equal(getPasscodeBinding(h.db, `p:${bloom.id}`), null);
-  });
-
-  it("waits for a target to exist before marking the migration as done", async () => {
-    const h = harness({ passcodeFiles: { "/work/toBloom::.dev.vars": "DEBUG_AUTH_PASSWORD=bloom-password-0042\n" } });
-    assert.deepEqual((await h.handlers.overview()).targets, []);
-    const bloom = h.project("/work/toBloom");
     await h.handlers.overview();
     assert.deepEqual(getPasscodeBinding(h.db, `p:${bloom.id}`), BLOOM);
+    assert.deepEqual(getPasscodeBinding(h.db, `p:${paw.id}`), { file: ".env", key: "DEBUG_PASSWORD" });
   });
 
   it("keeps copying from an environment file when the vault is unavailable", async () => {
@@ -1469,17 +1540,6 @@ describe("passcode source: environment files", () => {
     });
   });
 
-  it("chooses the files to scan from the recognised frameworks", () => {
-    assert.deepEqual(passcodeScanFiles(["Hono"]), [".env", ".env.local", ".dev.vars"]);
-    assert.deepEqual(passcodeScanFiles(["Django"]), [".env", ".dev.vars"]);
-    assert.deepEqual(passcodeScanFiles(["Next.js", "Django"]), [".env.local", ".env.development.local", ".env.development", ".env", ".dev.vars"]);
-    assert.deepEqual(passcodeScanFiles(["Flutter"]), []);
-    assert.deepEqual(passcodeScanFiles(["Expo", "Electron", "Tauri"]), []);
-    assert.deepEqual(passcodeScanFiles([null]), []);
-    assert.deepEqual(passcodeScanFiles([]), []);
-    assert.deepEqual(passcodeScanFiles(["Flutter", "Fastify"]), [".env", ".env.local", ".dev.vars"]);
-  });
-
   it("picks debug password keys only", () => {
     for (const key of ["DEBUG_AUTH_PASSWORD", "DEBUG_PASSWORD", "DEV_PASSWORD", "LOCAL_ADMIN_PWD", "APP_DEBUG_PASSCODE"]) {
       assert.equal(isPasscodeCandidateKey(key), true, key);
@@ -1489,19 +1549,19 @@ describe("passcode source: environment files", () => {
     }
   });
 
-  it("finds candidates per framework, in the root, service folders and workspace folders", async () => {
+  it("finds candidates in the root, service folders and workspace folders", async () => {
     await withDir(async (root) => {
       // Worker：.dev.vars 在根目錄。
       const worker = join(root, "worker");
       mkdirSync(worker);
       writeFileSync(join(worker, ".dev.vars"), "APP_JWT_SECRET=x\nDEBUG_AUTH_PASSWORD=\n");
-      assert.deepEqual(await fsPasscodeSource.scan(worker, { frameworks: ["Hono"], serviceDirs: [worker] }), [{ file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" }]);
+      assert.deepEqual(await fsPasscodeSource.scan(worker, { serviceDirs: [worker] }), [{ file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" }]);
 
       // Django：根目錄 .env；DATABASE_PASSWORD 不是候選。
       const django = join(root, "django");
       mkdirSync(django);
       writeFileSync(join(django, ".env"), "DATABASE_PASSWORD=db\nDEBUG_PASSWORD=dev\n");
-      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Django"], serviceDirs: [django] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
+      assert.deepEqual(await fsPasscodeSource.scan(django, { serviceDirs: [django] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
 
       // 多服務：根目錄 .env 與 apps/edge/.dev.vars 都列出，服務目錄不重複。
       const multi = join(root, "multi");
@@ -1510,29 +1570,21 @@ describe("passcode source: environment files", () => {
       writeFileSync(join(multi, ".env"), "DEBUG_PASSWORD=root\n");
       writeFileSync(join(multi, "apps/edge/.dev.vars"), "DEBUG_AUTH_PASSWORD=edge\n");
       writeFileSync(join(multi, "apps/api/.env"), "DEV_PASSWORD=api\n");
-      const found = await fsPasscodeSource.scan(multi, { frameworks: ["Django", "Hono"], serviceDirs: [join(multi, "apps/api"), join(multi, "apps/api")] });
+      const found = await fsPasscodeSource.scan(multi, { serviceDirs: [join(multi, "apps/api"), join(multi, "apps/api")] });
       assert.deepEqual(
         found.map((candidate) => `${candidate.file}:${candidate.key}`).sort(),
         ["apps/api/.env:DEV_PASSWORD", "apps/edge/.dev.vars:DEBUG_AUTH_PASSWORD", ".env:DEBUG_PASSWORD"].sort()
       );
 
-      // 公開前綴、建置輸出、用戶端程式與辨識不出來的框架都不會被建議。
+      // 公開前綴與建置輸出都不會被建議。
       const web = join(root, "web");
       mkdirSync(join(web, "dist"), { recursive: true });
       writeFileSync(join(web, ".env.local"), "NEXT_PUBLIC_DEBUG_PASSWORD=public\n");
       writeFileSync(join(web, "dist/.dev.vars"), "DEBUG_AUTH_PASSWORD=build-copy\n");
-      assert.deepEqual(await fsPasscodeSource.scan(web, { frameworks: ["Next.js"], serviceDirs: [web] }), []);
-      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Flutter"], serviceDirs: [django] }), []);
-      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: [null], serviceDirs: [django] }), []);
+      assert.deepEqual(await fsPasscodeSource.scan(web, { serviceDirs: [web] }), []);
       // 服務工作目錄跳出專案資料夾時忽略。
-      assert.deepEqual(await fsPasscodeSource.scan(django, { frameworks: ["Django"], serviceDirs: [worker] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
+      assert.deepEqual(await fsPasscodeSource.scan(django, { serviceDirs: [worker] }), [{ file: ".env", key: "DEBUG_PASSWORD" }]);
     });
-  });
-
-  it("knows the two legacy projects by folder name only", () => {
-    assert.deepEqual(legacyPasscodeBinding("/Users/me/toBloom"), { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" });
-    assert.deepEqual(legacyPasscodeBinding("/Users/me/stockPaw"), { file: ".env", key: "DEBUG_PASSWORD" });
-    assert.equal(legacyPasscodeBinding("/Users/me/other"), null);
   });
 
   it("ignores corrupted bindings in the settings table", () => {
@@ -1550,6 +1602,184 @@ describe("passcode source: environment files", () => {
     setPasscodeBinding(db, "p:1", null);
     assert.equal(getPasscodeBinding(db, "p:1"), null);
     assert.deepEqual(getPasscodeBinding(db, "p:7"), { file: ".dev.vars", key: "DEBUG_AUTH_PASSWORD" });
+  });
+});
+
+describe("run handlers: stale desktop processes", () => {
+  const desktopManifest = (): LoadedManifest => {
+    const result = validateManifest({ version: 1, services: [{ name: "desk", role: "desktop", command: ["pnpm", "dev"], port: false, env: {} }] });
+    assert.ok(result.ok);
+    return { status: "ok", manifest: result.manifest, hash: "b".repeat(64) };
+  };
+  const stale = (pid: number): StaleProcess => ({ pid, ppid: 1, elapsed: "19:20", command: "/work/app/node_modules/electron" });
+  const make = (extra: { earlyExitCheckMs?: number } = {}) => {
+    const h = harness({ loaded: desktopManifest() }, extra);
+    const project = h.project();
+    return { h, targetId: `p:${project.id}` };
+  };
+
+  it("asks before starting when a stale process is left, ends it, then starts", async () => {
+    const { h, targetId } = make();
+    h.staleState.list = [stale(7), stale(8)];
+    ok(await h.handlers.run(targetId, serviceAction("desk", "start")));
+    assert.equal(h.staleState.confirms, 1);
+    assert.deepEqual(h.staleState.ended, [[7, 8]]);
+    assert.equal(h.launched.length, 1);
+  });
+
+  it("does not start or kill anything when the stale-process prompt is refused", async () => {
+    const { h, targetId } = make();
+    h.staleState.list = [stale(7)];
+    h.staleState.allow = false;
+    const result = await h.handlers.run(targetId, serviceAction("desk", "start"));
+    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "denied"]);
+    assert.equal(h.launched.length, 0);
+    assert.deepEqual(h.staleState.ended, []);
+  });
+
+  it("does not start when a stale process cannot be ended", async () => {
+    const { h, targetId } = make();
+    h.staleState.list = [stale(7)];
+    h.staleState.failEnd = true;
+    const result = await h.handlers.run(targetId, serviceAction("desk", "start"));
+    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+    assert.equal(h.launched.length, 0);
+  });
+
+  it("does not prompt when nothing is left over", async () => {
+    const { h, targetId } = make();
+    ok(await h.handlers.run(targetId, serviceAction("desk", "start")));
+    assert.equal(h.staleState.confirms, 0);
+  });
+
+  it("stop also cleans processes that no session knows about", async () => {
+    const { h, targetId } = make();
+    h.staleState.list = [stale(9)];
+    const result = await h.handlers.run(targetId, serviceAction("desk", "stop"));
+    ok(result);
+    assert.deepEqual(h.staleState.ended, [[9]]);
+    const empty = await h.handlers.run(targetId, serviceAction("desk", "stop"));
+    assert.deepEqual([empty.ok, empty.ok ? "" : empty.reason], [false, "nothing-to-do"]);
+  });
+
+  it("flags a desktop service whose processes are gone shortly after start", async () => {
+    const { h, targetId } = make({ earlyExitCheckMs: 5 });
+    ok(await h.handlers.run(targetId, serviceAction("desk", "start")));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    const view = (await h.handlers.overview()).targets[0]?.services[0];
+    assert.equal(view?.exitedEarly, true);
+
+    ok(await h.handlers.run(targetId, serviceAction("desk", "stop")));
+    assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.exitedEarly, undefined);
+  });
+
+  it("does not flag a desktop service whose processes are still alive", async () => {
+    const { h, targetId } = make({ earlyExitCheckMs: 5 });
+    ok(await h.handlers.run(targetId, serviceAction("desk", "start")));
+    h.staleState.list = [stale(7)];
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.exitedEarly, undefined);
+  });
+});
+
+describe("run handlers: release ports", () => {
+  const fixedLoaded = (): LoadedManifest => ({ status: "ok", manifest: fixedManifestOf(), hash: "c".repeat(64) });
+
+  it("releases a port recorded in .dev/ports.json even though no session remembers it", async () => {
+    const h = harness({ portsFiles: { "/work/app": { api: 41555 } } });
+    const project = h.project();
+    h.listening.add(41555);
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("api", "release"));
+    ok(result);
+    assert.deepEqual(h.stopped, [[41555]]);
+    assert.equal(h.listening.has(41555), false);
+    assert.deepEqual(h.staleState.releases, [{ service: "api", ports: [41555] }]);
+    assert.match(result.ok ? result.message : "", /41555/);
+  });
+
+  it("includes the fixed port from the manifest", async () => {
+    const h = harness({ loaded: fixedLoaded() });
+    const project = h.project();
+    h.listening.add(5174);
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("api", "release")));
+    assert.deepEqual(h.stopped, [[5174]]);
+  });
+
+  it("only touches the chosen service", async () => {
+    const h = harness({ portsFiles: { "/work/app": { api: 41555, web: 41556 } } });
+    const project = h.project();
+    h.listening.add(41555);
+    h.listening.add(41556);
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("api", "release")));
+    assert.deepEqual(h.stopped, [[41555]]);
+    assert.equal(h.listening.has(41556), true);
+  });
+
+  it("ends nothing when the confirmation is cancelled", async () => {
+    const h = harness({ portsFiles: { "/work/app": { api: 41555 } } });
+    const project = h.project();
+    h.listening.add(41555);
+    h.staleState.allow = false;
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("api", "release"));
+    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "denied"]);
+    assert.deepEqual(h.stopped, []);
+    assert.equal(h.listening.has(41555), true);
+  });
+
+  it("reports the port that stays busy", async () => {
+    const h = harness({ portsFiles: { "/work/app": { api: 41555 } } });
+    const project = h.project();
+    h.listening.add(41555);
+    h.state.release = "never";
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("api", "release"));
+    assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
+    assert.match(result.ok ? "" : result.message, /41555/);
+  });
+
+  it("says so when there is nothing to release, and rejects unknown services", async () => {
+    const h = harness();
+    const project = h.project();
+    const none = await h.handlers.run(`p:${project.id}`, serviceAction("api", "release"));
+    assert.deepEqual([none.ok, none.ok ? "" : none.reason], [false, "nothing-to-do"]);
+    const unknown = await h.handlers.run(`p:${project.id}`, serviceAction("ghost", "release"));
+    assert.deepEqual([unknown.ok, unknown.ok ? "" : unknown.reason], [false, "unknown-service"]);
+  });
+
+  it("closes the tab and forgets the session after a start", async () => {
+    const h = harness();
+    const project = h.project();
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("api", "start")));
+    h.listening.add(41001);
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("api", "release")));
+    assert.deepEqual(h.closed.at(-1), ["gitnrun p:1 api"]);
+    const view = (await h.handlers.overview()).targets[0]?.services.find((item) => item.name === "api");
+    assert.equal(view?.state, "stopped");
+  });
+
+  it("hints at the release button when a fixed port is already taken", async () => {
+    const h = harness({ loaded: fixedLoaded() });
+    const project = h.project();
+    h.listening.add(5174);
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("api", "start"));
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? "" : result.message, /釋放 port/);
+    assert.deepEqual(h.stopped, []);
+  });
+
+  it("only enables the release button when there is something to release", async () => {
+    const empty = harness();
+    empty.project();
+    const buttonOf = async (h: typeof empty, name: string) => (await h.handlers.overview()).targets[0]?.services.find((item) => item.name === name)?.buttons.release;
+    assert.deepEqual(await buttonOf(empty, "api"), { enabled: false, reason: "沒有需要釋放的 port" });
+
+    const recorded = harness({ portsFiles: { "/work/app": { api: 41555 } } });
+    recorded.project();
+    assert.equal((await buttonOf(recorded, "api"))?.enabled, true);
+
+    const fixed = harness({ loaded: fixedLoaded() });
+    fixed.project();
+    assert.equal((await buttonOf(fixed, "api"))?.enabled, true);
+    assert.equal((await buttonOf(fixed, "web"))?.enabled, false);
   });
 });
 

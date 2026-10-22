@@ -21,6 +21,7 @@
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
 | 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依分組表分頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要換成自己的專案分組得改該檔；專案與 App 順序可在畫面手動調整（只存本機檢視偏好）；每個專案卡顯示 GitHub Issue 區塊 |
+| Claude 指令頁籤 | 主頁籤「Claude」（在「設定」之前）列出常用指令，每條附「複製」按鈕，免手打 | 分三組：終端機指令（`claude --model sonnet`、`clear`）、Claude 內指令（`/model sonnet`、`/model haiku`）、文字觸發語（推送、開工、完工）；複製走既有 `copyText` IPC，按鈕文字短暫顯示「已複製」或「複製失敗」 | 指令清單寫死在 `src/renderer/ClaudeView.tsx`，要增減指令得改該檔；內容非密鑰，不做剪貼簿自動清除；renderer 不直接用瀏覽器剪貼簿 API（Electron 內會被擋） |
 | 釋放終端機 port | 一鍵結束在終端機手動開的 port | 設定頁「連接埠掃描」先列出將結束的程序，確認後才結束 | 只處理本人擁有、有控制終端機、且不是 GitNRun 自身上下層的監聽程序；無終端機的背景服務（資料庫、Docker、系統程序）一律不碰 |
 | Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（GitNRun 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
@@ -139,7 +140,7 @@
 - 後端與前端服務必須 `port: true`。
 - 可選 `fixedPort: 1024～65535`；只能用於 `port: true`，同一描述檔不可重複。未指定者維持動態配置；固定 port 已被占用時拒絕啟動，不改用其他號碼，也不結束占用它的程序。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。兩個模擬器識別碼是寫死的常數（`src/main/run/manifest.ts` 的 `FLUTTER_IOS_DEVICE_ID`、`FLUTTER_ANDROID_AVD_ID`），預設值是作者自己的開發用模擬器，使用者必須換成自己的；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.gitnrun/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；結束或重新啟動時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令不是由此推測產生、找不到 UDID 時才退回關閉全部。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是作者自己的開發用 AVD，使用者必須換成自己的，且結束時仍會關掉所有 Android 模擬器；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
 - 「重新啟動」先結束舊服務（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
 - 專案與 App 的手動排序：存在 renderer 的 localStorage（`gitnrun.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`gitnrun.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。

@@ -35,13 +35,40 @@ const PUBSPEC_YAML = "pubspec.yaml";
 /** 本機 Flutter 開發固定使用的模擬器；避免同名或泛用 target 被 Flutter 任意選取。 */
 export const FLUTTER_IOS_DEVICE_ID = "498D038D-9A95-4CB5-967C-B846B0E93DE8";
 export const FLUTTER_ANDROID_AVD_ID = "Pixel_6_API_34_dev";
-/** 啟動並等待指定 iOS 模擬器，之後才交給 Flutter；已啟動時 simctl boot 的失敗可忽略。 */
-export const FLUTTER_IOS_RUN_SCRIPT = [
-  `xcrun simctl boot ${FLUTTER_IOS_DEVICE_ID} >/dev/null 2>&1 || true`,
-  `xcrun simctl bootstatus ${FLUTTER_IOS_DEVICE_ID} -b || exit 1`,
-  `open -a Simulator --args -CurrentDeviceUDID ${FLUTTER_IOS_DEVICE_ID} || exit 1`,
-  `exec flutter run -d ${FLUTTER_IOS_DEVICE_ID}`
-].join("; ");
+/** 專案內指定 iOS 模擬器的檔案（一行 UDID）；沒有或格式不對就用預設裝置。 */
+export const IOS_DEVICE_FILE = join(".gitnrun", "ios-device");
+const IOS_UDID_PATTERN = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+export const isIosDeviceId = (value: string): boolean => IOS_UDID_PATTERN.test(value);
+/** 啟動並等待指定 iOS 模擬器，之後才交給 Flutter；已啟動時 simctl boot 的失敗可忽略。udid 必須先通過 isIosDeviceId。 */
+export const iosRunScript = (udid: string): string => {
+  if (!isIosDeviceId(udid)) throw new Error("不合法的 iOS 模擬器 UDID");
+  return [
+    `xcrun simctl boot ${udid} >/dev/null 2>&1 || true`,
+    `xcrun simctl bootstatus ${udid} -b || exit 1`,
+    `open -a Simulator --args -CurrentDeviceUDID ${udid} || exit 1`,
+    `exec flutter run -d ${udid}`
+  ].join("; ");
+};
+export const FLUTTER_IOS_RUN_SCRIPT = iosRunScript(FLUTTER_IOS_DEVICE_ID);
+/** 從 iOS 服務的啟動指令取回它綁定的模擬器 UDID；不是 iosRunScript 產生的指令回傳 null。 */
+export const iosDeviceIdOf = (command: readonly string[]): string | null => {
+  const match = /xcrun simctl boot ([0-9A-F-]{36}) >\/dev\/null/i.exec(command.join(" "));
+  const id = match?.[1];
+  return id !== undefined && isIosDeviceId(id) ? id : null;
+};
+const readIosDeviceId = async (folder: string, root: string, fs: ManifestFs): Promise<string> => {
+  const file = join(folder, IOS_DEVICE_FILE);
+  const info = await fs.lstat(file);
+  if (info === null || !info.isFile) return FLUTTER_IOS_DEVICE_ID;
+  const real = await fs.realpath(file);
+  if (real === null || !isInside(root, real)) return FLUTTER_IOS_DEVICE_ID;
+  try {
+    const value = (await fs.readFile(real)).trim();
+    return isIosDeviceId(value) ? value : FLUTTER_IOS_DEVICE_ID;
+  } catch {
+    return FLUTTER_IOS_DEVICE_ID;
+  }
+};
 /** 啟動指定 AVD，找到其 ADB serial 後才交給 Flutter，避免泛用 target 選到其他模擬器。 */
 export const FLUTTER_ANDROID_RUN_SCRIPT = [
   `flutter emulators --launch ${FLUTTER_ANDROID_AVD_ID}`,
@@ -193,6 +220,7 @@ const inferFlutterManifest = async (folder: string, root: string, fs: ManifestFs
     return { status: "invalid", errors: [`讀不到 ${PUBSPEC_YAML}`] };
   }
 
+  const iosDeviceId = await readIosDeviceId(folder, root, fs);
   // iOS 模擬器與 Android 模擬器拆成兩個獨立服務：電腦不一定撐得起兩個同時跑，由使用者各自啟動。
   const validation = validateManifest({
     version: 1,
@@ -205,7 +233,7 @@ const inferFlutterManifest = async (folder: string, root: string, fs: ManifestFs
         port: true,
         env: {}
       },
-      { name: "flutter-ios", role: "desktop", cwd: ".", command: ["zsh", "-lc", FLUTTER_IOS_RUN_SCRIPT], port: false, env: {} },
+      { name: "flutter-ios", role: "desktop", cwd: ".", command: ["zsh", "-lc", iosRunScript(iosDeviceId)], port: false, env: {} },
       { name: "flutter-android", role: "desktop", cwd: ".", command: ["zsh", "-lc", FLUTTER_ANDROID_RUN_SCRIPT], port: false, env: {} }
     ]
   });

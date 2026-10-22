@@ -12,6 +12,7 @@ export const registerRunIpc = (handlers: RunHandlers): void => {
   handleIpc(IPC.runCopyPasscode, asRunTargetIdArgs, (targetId) => handlers.copyPasscode(targetId));
   handleIpc(IPC.runBindPasscode, asRunPasscodeBindingArgs, (targetId, binding) => handlers.bindPasscode(targetId, binding));
   handleIpc(IPC.runUnbindPasscode, asRunTargetIdArgs, (targetId) => handlers.unbindPasscode(targetId));
+  handleIpc(IPC.runRecheckPasscode, asRunTargetIdArgs, (targetId) => handlers.recheckPasscode(targetId));
   handleIpc(IPC.runOpenPasscodeFile, asRunTargetIdArgs, (targetId) => handlers.openPasscodeFile(targetId));
   handleIpc(IPC.runScanPorts, asNoArgs, () => handlers.scanPorts());
   handleIpc(IPC.runReleasePorts, asNoArgs, () => handlers.releasePorts());

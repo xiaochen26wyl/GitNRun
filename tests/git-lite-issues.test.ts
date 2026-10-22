@@ -249,21 +249,21 @@ describe("issue display preference", () => {
 describe("planChangeBadge", () => {
   const badgeFor = (changedFiles: number) => planChangeBadge(ready(project("/work/app", { changedFiles })), "/work/app");
 
-  it("uses 50 as the push reminder threshold", () => {
-    assert.equal(PUSH_REMINDER_THRESHOLD, 50);
+  it("uses 100 as the push reminder threshold", () => {
+    assert.equal(PUSH_REMINDER_THRESHOLD, 100);
   });
 
   it("shows the count against the threshold without a reminder below it", () => {
-    for (const count of [0, 1, 49]) {
-      assert.deepEqual(badgeFor(count), { kind: "badge", count, text: `變更檔案 ${count}／50`, reminder: null }, String(count));
+    for (const count of [0, 1, 99]) {
+      assert.deepEqual(badgeFor(count), { kind: "badge", count, text: `變更檔案 ${count}／100`, reminder: null }, String(count));
     }
   });
 
-  it("adds the push reminder from exactly 50 files", () => {
-    for (const count of [50, 51, 200]) {
+  it("adds the push reminder from exactly 100 files", () => {
+    for (const count of [100, 101, 200]) {
       assert.deepEqual(
         badgeFor(count),
-        { kind: "badge", count, text: `變更檔案 ${count}／50`, reminder: "已達 50，該推送了" },
+        { kind: "badge", count, text: `變更檔案 ${count}／100`, reminder: "已達 100，該推送了" },
         String(count)
       );
     }

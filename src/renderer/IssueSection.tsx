@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { errorMessage, formatRelative } from "@shared/format";
+import { errorMessage } from "@shared/format";
 import {
   ISSUE_PREVIEW_COUNT,
   parseIssueDisplayPref,
@@ -205,15 +205,12 @@ export const IssueSection = ({
           <ul className="issue-list">
             {plan.visible.map((issue) => (
               <li key={issue.id} className="issue-item">
-                <ExternalLink url={issue.url} className="issue-link">
-                  {issue.title}
-                </ExternalLink>
-                <div>
-                  <span className="issue-number mono">#{issue.number}</span>
-                  <span className="muted">
-                    {" "}
-                    · {issue.author} · {issue.updatedAt ? formatRelative(issue.updatedAt) : "未知時間"}
-                  </span>
+                <span className="issue-number mono">#{issue.number}</span>
+                <div className="issue-body">
+                  <ExternalLink url={issue.url} className="issue-link">
+                    {issue.title}
+                  </ExternalLink>
+                  <div className="muted">{issue.author}</div>
                 </div>
               </li>
             ))}

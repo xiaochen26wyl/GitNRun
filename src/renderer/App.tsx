@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import type { AppInfo } from "@shared/ipc";
 import { DEFAULT_RUN_GROUP_ID, RUN_GROUPS, RUN_OTHER_GROUP, runGroupById, type RunGroupId } from "@shared/run-groups";
+import { ClaudeView } from "./ClaudeView";
 import { GeneralPanel } from "./GeneralPanel";
+import { LogsView } from "./LogsView";
 import { PortSweepPanel } from "./PortSweepPanel";
 import { RunView } from "./RunView";
 import { SecretsPanel } from "./SecretsPanel";
 import logo from "./assets/logo.png";
 
-type Tab = RunGroupId | "settings";
+type Tab = RunGroupId | "claude" | "settings";
 
 export const App = () => {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -39,6 +41,9 @@ export const App = () => {
               {group.label}
             </button>
           ))}
+          <button type="button" className={tab === "claude" ? "active" : ""} onClick={() => setTab("claude")}>
+            Claude
+          </button>
           <button type="button" className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>
             設定
           </button>
@@ -46,11 +51,16 @@ export const App = () => {
       </header>
 
       <main className="content">
-        {tab !== "settings" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} onOpenSettings={() => setTab("settings")} /> : null}
+        {tab !== "settings" && tab !== "claude" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} onOpenSettings={() => setTab("settings")} /> : null}
+        {tab === "claude" ? <ClaudeView /> : null}
         {tab === "settings" ? (
           <div className="settings-page">
             <PortSweepPanel />
             <GeneralPanel />
+            <section className="panel">
+              <h2>日誌</h2>
+              <LogsView />
+            </section>
             <SecretsPanel />
           </div>
         ) : null}

@@ -9,11 +9,14 @@ import { detectAvailability, run as execForResult } from "@main/launcher/runtime
 import { buildItermCloseArgs, buildItermTabsArgs } from "@main/launcher/osascript";
 import { native } from "@main/native/bridge";
 import { detectFramework, type FrameworkFs } from "@main/run/framework";
-import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest, type RunHandlers } from "@main/run/handlers";
+import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest, type ConfirmReleaseRequest, type ConfirmStaleRequest, type RunHandlers } from "@main/run/handlers";
 import { detectInstaller } from "@main/run/installer";
-import { loadManifest } from "@main/run/manifest";
+import { isIosDeviceId, loadManifest } from "@main/run/manifest";
 import { fsPasscodeSource } from "@main/run/passcode-source";
 import { createSystemPortSweep } from "@main/run/port-sweep";
+import { ensureSimulatorWindow } from "@main/run/simulator-window";
+import { createSystemStaleProcesses } from "@main/run/stale-process";
+import { describeStale } from "@shared/stale-process";
 import { allocatePorts, probePort, readPortsFile, writePortsFile } from "@main/run/ports";
 import type { Vault } from "@main/vault/vault";
 
@@ -35,6 +38,36 @@ const confirmCommands = async (request: ConfirmCommandsRequest): Promise<boolean
     message: request.changed ? `「${request.label}」的啟動指令有變動，要執行嗎？` : `第一次執行「${request.label}」的啟動指令，要執行嗎？`,
     detail: `GitNRun 會控制 iTerm2 開啟分頁，並在指定資料夾執行下列指令。\n\n資料夾：${request.folder}\n\n將執行（{port} 等佔位會換成實際的 port）：\n${listing}\n\n指令會從專案設定或 package.json scripts 讀出；第一次執行或內容變更後都需要你確認。確認後，只要內容沒有再變動就不會再問。`,
     buttons: ["拒絕", "允許"],
+    defaultId: 0,
+    cancelId: 0
+  });
+  return response === 1;
+};
+
+const confirmStale = async (request: ConfirmStaleRequest): Promise<boolean> => {
+  native().bounceDock();
+  const response = await native().confirm({
+    kind: "warning",
+    title: "GitNRun",
+    message: `「${request.label}」還有 ${request.processes.length} 個舊程序在背景執行，要先結束再啟動嗎？`,
+    detail: `桌面 app 通常只允許同時開一份；舊的還在時，新啟動的會被擋掉並立刻退出。\n\n專案：${request.folder}\n\n將結束：\n${describeStale(request.processes, request.folder)}\n\n會先送出結束訊號，3 秒後仍未退出的才強制結束。`,
+    buttons: ["取消", "結束後啟動"],
+    defaultId: 0,
+    cancelId: 0
+  });
+  return response === 1;
+};
+
+const confirmRelease = async (request: ConfirmReleaseRequest): Promise<boolean> => {
+  native().bounceDock();
+  const portLine = request.ports.length > 0 ? `將結束占用 port 的程序：${request.ports.join("、")}\n\n` : "";
+  const staleLine = request.processes.length > 0 ? `將結束資料夾裡的殘留程序：\n${describeStale(request.processes, request.folder)}\n\n` : "";
+  const response = await native().confirm({
+    kind: "warning",
+    title: "GitNRun",
+    message: `要釋放「${request.label}」的 ${request.service} 嗎？`,
+    detail: `${portLine}${staleLine}只會處理這個服務，同專案的其他服務不受影響。占用 port 的程序只送出結束訊號；殘留程序 3 秒後仍未退出才強制結束。`,
+    buttons: ["取消", "釋放"],
     defaultId: 0,
     cancelId: 0
   });
@@ -120,18 +153,24 @@ const ANDROID_SHUTDOWN = [
   'for serial in $("$adb_bin" devices | awk \'/^emulator-[0-9]+[[:space:]]+device/ {print $1}\'); do "$adb_bin" -s "$serial" emu kill || exit 1; done'
 ].join("; ");
 
-/** 平台對應的關模擬器指令；只有這兩支，其他值不存在。 */
-export const simulatorShutdownCommand = (platform: MobilePlatform): string => {
+/** 平台對應的關模擬器指令。iOS 帶 UDID 時只關那一台（UDID 先驗格式）；沒帶就退回關全部。 */
+export const simulatorShutdownCommand = (platform: MobilePlatform, deviceId?: string | null): string => {
   switch (platform) {
     case "ios":
-      return IOS_SHUTDOWN;
+      if (deviceId === undefined || deviceId === null) return IOS_SHUTDOWN;
+      if (!isIosDeviceId(deviceId)) throw new Error("不合法的 iOS 模擬器 UDID");
+      return [
+        'command -v xcrun >/dev/null 2>&1 || { echo "找不到 xcrun（請先安裝 Xcode）" >&2; exit 127; }',
+        `xcrun simctl list devices booted 2>/dev/null | grep -q "${deviceId}" || exit 0`,
+        `xcrun simctl shutdown ${deviceId}`
+      ].join("; ");
     case "android":
       return ANDROID_SHUTDOWN;
   }
 };
 
-const closeSimulator = (platform: MobilePlatform): Promise<{ code: number; stderr: string }> =>
-  execForResult(SHELL, ["-lc", simulatorShutdownCommand(platform)]);
+const closeSimulator = (platform: MobilePlatform, deviceId?: string | null): Promise<{ code: number; stderr: string }> =>
+  execForResult(SHELL, ["-lc", simulatorShutdownCommand(platform, deviceId)]);
 
 export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; copySecret: (secret: string) => Promise<void> }): RunHandlers =>
   createRunHandlers({
@@ -151,11 +190,15 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     launchTabs: (tabs) => execForResult(OSASCRIPT, buildItermTabsArgs(tabs)),
     stopPorts,
     closeSimulator,
+    prepareSimulator: (udid) => ensureSimulatorWindow(udid),
     closeTabs: (sessionNames) => execForResult(OSASCRIPT, buildItermCloseArgs(sessionNames)),
     confirmCommands,
     confirmReinstall,
     detectInstaller: (dir, inherited) => detectInstaller(dir, inherited),
     portSweep: createSystemPortSweep(),
+    staleProcesses: createSystemStaleProcesses(),
+    confirmStale,
+    confirmRelease,
     openUrl: async (url) => {
       if (!LOCAL_URL.test(url)) {
         throw new Error("不允許開啟非本機網址");

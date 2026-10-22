@@ -19,7 +19,7 @@ import { registerGitLiteIpc } from "@main/git-lite/ipc";
 import { runGit } from "@main/git/run-git";
 import { readProjectVersion } from "@main/git/version-source";
 import { handleIpc } from "@main/ipc";
-import { asNoArgs } from "@main/ipc-validation";
+import { asNoArgs, asNotifyShowArgs } from "@main/ipc-validation";
 import type { ExternalOpenGate } from "@main/launcher/external";
 import { registerLauncherIpc } from "@main/launcher/ipc";
 import { createLauncherRuntime } from "@main/launcher/runtime";
@@ -28,6 +28,7 @@ import { createRunRuntime } from "@main/run/runtime";
 import { createLogger, type Logger } from "@main/logger";
 import { createEventPipeline, createMonitorRuntime, emitMonitorChange } from "@main/monitor/runtime";
 import { native } from "@main/native/bridge";
+import { showDesktopNotification } from "@main/notifier";
 import { installProcessGuards } from "@main/reliability/process-guards";
 import { createRulesHandlers } from "@main/rules/handlers";
 import { registerRulesIpc } from "@main/rules/ipc";
@@ -62,6 +63,13 @@ export interface Core {
 
 const registerAppInfoIpc = (): void => {
   handleIpc(IPC.appInfo, asNoArgs, () => native().appInfo());
+};
+
+/** renderer 主動觸發的系統通知（例如變更檔案數跨過門檻），點擊時聚焦主視窗。 */
+const registerNotifyIpc = (onNotificationClick: () => void): void => {
+  handleIpc(IPC.notifyShow, asNotifyShowArgs, (title, body) => {
+    showDesktopNotification(title, body, onNotificationClick);
+  });
 };
 
 export const startCore = (options: CoreOptions): Core => {
@@ -119,6 +127,7 @@ export const startCore = (options: CoreOptions): Core => {
   });
 
   registerAppInfoIpc();
+  registerNotifyIpc(onNotificationClick);
   registerSecretsIpc(vault, { ai });
   registerAiIpc(ai);
   registerAppIpc(createAppHandlers({ db, monitor, git, log: (entry) => log.log(entry), onConfigChanged }));

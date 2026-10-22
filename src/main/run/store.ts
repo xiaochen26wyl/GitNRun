@@ -17,7 +17,7 @@ export const RUN_KEYS = {
   trusted: "run.trusted",
   accounts: "run.accounts",
   passcodeSources: "run.passcodeSources",
-  passcodeMigrated: "run.passcodeMigrated"
+  passcodeReleased: "run.passcodeReleased"
 } as const;
 
 export interface RunFolder {
@@ -157,7 +157,16 @@ export const setPasscodeBinding = (db: Db, targetId: string, binding: PasscodeBi
   setSetting(db, RUN_KEYS.passcodeSources, Object.fromEntries(kept));
 };
 
-/** 舊版寫死兩個專案的一次性遷移是否已經跑過。 */
-export const isPasscodeMigrated = (db: Db): boolean => getSetting<unknown>(db, RUN_KEYS.passcodeMigrated, false) === true;
+/** 使用者手動解除過綁定的目標；偵測不再替它們自動綁回。 */
+const readPasscodeReleased = (db: Db): string[] => {
+  const stored = getSetting<unknown>(db, RUN_KEYS.passcodeReleased, []);
+  return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string" && isRunTargetId(id)) : [];
+};
 
-export const markPasscodeMigrated = (db: Db): void => setSetting(db, RUN_KEYS.passcodeMigrated, true);
+export const isPasscodeAutoBindBlocked = (db: Db, targetId: string): boolean => readPasscodeReleased(db).includes(targetId);
+
+export const setPasscodeAutoBindBlocked = (db: Db, targetId: string, blocked: boolean): void => {
+  const rest = readPasscodeReleased(db).filter((id) => id !== targetId);
+  const next = blocked ? [...rest, targetId] : rest;
+  setSetting(db, RUN_KEYS.passcodeReleased, next.slice(-MAX_PASSCODE_SOURCES));
+};

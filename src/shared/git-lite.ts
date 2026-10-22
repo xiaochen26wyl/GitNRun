@@ -181,7 +181,7 @@ export const formatGroupIssueTotal = (total: { count: number; truncated: boolean
 /* 專案卡片標題下的變更檔案數：判斷集中在這裡，renderer 只負責呈現。 */
 
 /** 變更檔案數達到這個數字就該推送了。 */
-export const PUSH_REMINDER_THRESHOLD = 50;
+export const PUSH_REMINDER_THRESHOLD = 100;
 
 export type ChangeBadgePlan =
   | { kind: "hidden" }

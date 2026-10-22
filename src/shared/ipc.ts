@@ -72,6 +72,7 @@ export const IPC = {
   runCopyPasscode: "run:copy-passcode",
   runBindPasscode: "run:bind-passcode",
   runUnbindPasscode: "run:unbind-passcode",
+  runRecheckPasscode: "run:recheck-passcode",
   runOpenPasscodeFile: "run:open-passcode-file",
   runScanPorts: "run:scan-ports",
   runReleasePorts: "run:release-ports",
@@ -93,6 +94,7 @@ export const IPC = {
   aiConflicts: "ai:conflicts",
   clipboardWrite: "clipboard:write",
   externalOpen: "external:open",
+  notifyShow: "notify:show",
   webhookSettingsGet: "webhook:settings:get",
   webhookSettingsSave: "webhook:settings:save",
   webhookStatus: "webhook:status",
@@ -208,6 +210,8 @@ export interface GitNRunApi {
   /** 指定 Debug 密碼讀哪個環境檔（相對專案的路徑）的哪個鍵；密碼只留在環境檔，GitNRun 只讀取。 */
   bindRunPasscode(targetId: string, binding: PasscodeBinding): Promise<void>;
   unbindRunPasscode(targetId: string): Promise<void>;
+  /** 清掉候選快取並重新偵測環境檔。 */
+  recheckRunPasscode(targetId: string): Promise<void>;
   /** 用文件編輯器開綁定的環境檔；路徑由主程序算出。 */
   openRunPasscodeFile(targetId: string): Promise<void>;
   /** 列出終端機手動開的 port 與占用它的程序（不結束任何東西）。 */
@@ -241,6 +245,8 @@ export interface GitNRunApi {
   copyText(text: string): Promise<void>;
   /** 用系統瀏覽器開啟網址；主程序只放行 https://github.com/settings/ 底下的頁面（建立 token 的教學用）。 */
   openExternalLink(url: string): Promise<void>;
+  /** 顯示一則系統通知；系統不支援通知時不會報錯，只是沒有動作。 */
+  showDesktopNotification(title: string, body: string): Promise<void>;
 
   getWebhookSettings(): Promise<WebhookSettings>;
   saveWebhookSettings(settings: WebhookSettings): Promise<WebhookSettings>;

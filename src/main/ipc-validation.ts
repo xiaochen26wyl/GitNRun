@@ -444,6 +444,13 @@ export const asClipboardArgs = (args: readonly unknown[]): [string] | null => {
   return text === null ? null : [text];
 };
 
+/** renderer 主動觸發系統通知：標題與內容都是單行文字，各自有長度上限。 */
+export const asNotifyShowArgs = (args: readonly unknown[]): [string, string] | null => {
+  const title = args.length === 2 ? asBoundedString(args[0], { max: 100 }) : null;
+  const body = title === null ? null : asBoundedString(args[1], { max: 300 });
+  return title === null || body === null ? null : [title, body];
+};
+
 const EXTERNAL_LINK_HOST = "github.com";
 const EXTERNAL_LINK_PATH_PREFIX = "/settings/";
 /** 專案頁的 issue 清單（/owner/repo/issues）與單一 issue（/owner/repo/issues/123）。 */

@@ -15,7 +15,7 @@ export const RUN_ROLES = ["backend", "frontend", "desktop"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
 export const RUN_PROJECT_ACTIONS = ["stop", "readme", "reinstall"] as const;
-export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web"] as const;
+export const RUN_SERVICE_ACTIONS = ["start", "restart", "stop", "web", "release"] as const;
 export type RunProjectActionName = (typeof RUN_PROJECT_ACTIONS)[number];
 export type RunServiceActionName = (typeof RUN_SERVICE_ACTIONS)[number];
 export type RunAction =
@@ -469,6 +469,8 @@ export interface RunServiceButtons {
   restart: RunButtonState;
   stop: RunButtonState;
   web: RunButtonState;
+  /** 釋放這個服務的 port 與殘留程序；不要求目前正在執行。 */
+  release: RunButtonState;
 }
 
 export interface RunServiceView {
@@ -478,6 +480,8 @@ export interface RunServiceView {
   fixedPort: number | null;
   url: string | null;
   state: RunServiceState;
+  /** 沒有 port 的服務啟動後程序立即消失（例如被單一實例鎖擋掉）；只在確實偵測到時才有值。 */
+  exitedEarly?: boolean;
   /** 唯讀顯示用的指令（佔位保持原樣）。 */
   command: string;
   /** 偵測到的框架名稱（Django、Next.js…）；辨識不出來為 null，畫面退回角色標籤。 */
@@ -589,7 +593,7 @@ export const runButtonStates = (input: ButtonInput): RunButtons => {
 };
 
 export const runServiceButtonStates = (
-  service: Pick<RunServiceView, "role" | "state"> & { hasPort: boolean; hasSession: boolean },
+  service: Pick<RunServiceView, "role" | "state"> & { hasPort: boolean; hasSession: boolean; releasable?: boolean },
   iterm: boolean
 ): RunServiceButtons => {
   const active = isActive(service.state) || service.hasSession;
@@ -612,7 +616,9 @@ export const runServiceButtonStates = (
   else if (service.state !== "running") web = disabled("前端尚未啟動");
   else web = enabled;
 
-  return { start, restart, stop, web };
+  const release = service.releasable === true || service.hasSession ? enabled : disabled("沒有需要釋放的 port");
+
+  return { start, restart, stop, web, release };
 };
 
 // ---------------------------------------------------------------------------

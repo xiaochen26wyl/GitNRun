@@ -35,25 +35,28 @@ import {
   type RunTargetView
 } from "@shared/run";
 import type { PortSweepResult, PortSweepScan } from "@shared/port-sweep";
+import { describeStale, isNodeStyleCommand, type StaleProcess } from "@shared/stale-process";
 import type { Db } from "@main/db/database";
 import { listProjects } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
 import type { Logger } from "@main/logger";
 import { AUTOMATION_DENIED, runSessionName, type ItermTab } from "@main/launcher/osascript";
-import { serviceDirectory, type LoadedManifest } from "@main/run/manifest";
-import { legacyPasscodeBinding, type PasscodeSourceReader } from "@main/run/passcode-source";
+import { iosUdidOfCommand } from "@shared/ios-simulator";
+import { iosDeviceIdOf, serviceDirectory, type LoadedManifest } from "@main/run/manifest";
+import { type PasscodeSourceReader } from "@main/run/passcode-source";
 import type { PortSweep } from "@main/run/port-sweep";
+import type { StaleProcesses } from "@main/run/stale-process";
 import type { PortsFileService } from "@main/run/ports";
 import {
   addRunFolder,
   getPasscodeBinding,
   getRunAccount,
   hasTrustedBefore,
-  isPasscodeMigrated,
+  isPasscodeAutoBindBlocked,
   isRunTrusted,
   listRunFolders,
-  markPasscodeMigrated,
   removeRunFolder,
+  setPasscodeAutoBindBlocked,
   setPasscodeBinding,
   setRunAccount,
   trustRunManifest
@@ -81,7 +84,9 @@ export interface RunHandlerDeps {
   stopPorts: (ports: number[]) => Promise<{ code: number; stderr: string }>;
   closeTabs: (sessionNames: string[]) => Promise<{ code: number; stderr: string }>;
   /** 關閉該平台目前開著的模擬器；沒有開著的模擬器算成功。 */
-  closeSimulator: (platform: MobilePlatform) => Promise<{ code: number; stderr: string }>;
+  closeSimulator: (platform: MobilePlatform, deviceId?: string | null) => Promise<{ code: number; stderr: string }>;
+  /** 啟動 iOS 服務前讓它綁定的模擬器開機並顯示自己的視窗；沒注入就不處理。 */
+  prepareSimulator?: (udid: string) => Promise<{ ok: boolean; message: string }>;
   /** 原生確認對話框；使用者按「允許」才回傳 true。 */
   confirmCommands: (request: ConfirmCommandsRequest) => Promise<boolean>;
   /** 刪除 node_modules 前的原生確認對話框；使用者按「刪除並重裝」才回傳 true。 */
@@ -90,6 +95,14 @@ export interface RunHandlerDeps {
   detectInstaller: (dir: string, inherited: InstallManager | null) => Promise<InstallManager>;
   /** 列出與結束終端機手動開的 port；pid 由主程序掃描，不由畫面傳入。 */
   portSweep: PortSweep;
+  /** 專案資料夾裡的殘留程序（關掉視窗仍活著的桌面 app）；沒注入就不偵測也不清理。 */
+  staleProcesses?: StaleProcesses;
+  /** 啟動前發現殘留程序時的原生確認對話框；使用者按「結束後啟動」才回傳 true。 */
+  confirmStale?: (request: ConfirmStaleRequest) => Promise<boolean>;
+  /** 釋放 port 前的原生確認對話框；使用者按「釋放」才回傳 true。 */
+  confirmRelease?: (request: ConfirmReleaseRequest) => Promise<boolean>;
+  /** 啟動桌面服務後，等多久再檢查程序是否還在；0 = 不檢查。預設 5 秒。 */
+  earlyExitCheckMs?: number;
   openUrl: (url: string) => Promise<void>;
   /** 猜服務用的框架（Django、Next.js…）；沒注入或辨識不出來都是 null，失敗不影響總覽。 */
   detectFramework?: (folder: string, spec: RunServiceSpec) => Promise<string | null>;
@@ -118,6 +131,20 @@ export interface ConfirmCommandsRequest {
   lines: Array<{ service: string; command: string }>;
 }
 
+export interface ConfirmStaleRequest {
+  label: string;
+  folder: string;
+  processes: StaleProcess[];
+}
+
+export interface ConfirmReleaseRequest {
+  label: string;
+  service: string;
+  folder: string;
+  ports: number[];
+  processes: StaleProcess[];
+}
+
 export interface ConfirmReinstallRequest {
   label: string;
   folder: string;
@@ -137,6 +164,8 @@ export interface RunHandlers {
   /** 指定 Debug 密碼讀哪個環境檔的哪個鍵；檔案可以還不存在。 */
   bindPasscode(targetId: string, binding: PasscodeBinding): void;
   unbindPasscode(targetId: string): void;
+  /** 清掉候選快取，下次刷新重新掃描環境檔。 */
+  recheckPasscode(targetId: string): void;
   /** 用文件編輯器開綁定的環境檔，讓你自己改密碼。 */
   openPasscodeFile(targetId: string): Promise<void>;
   /** 列出終端機手動開的 port 與占用它的程序，不結束任何東西。 */
@@ -160,6 +189,7 @@ interface Session {
 
 export const DEFAULT_STARTING_GRACE_MS = 90_000;
 export const DEFAULT_PORT_RELEASE = { timeoutMs: 5_000, pollMs: 150 } as const;
+export const DEFAULT_EARLY_EXIT_CHECK_MS = 5_000;
 const ERROR_TEXT_MAX = 300;
 const CANDIDATE_CACHE_MS = 30_000;
 const SIMULATOR_LABEL: Record<MobilePlatform, string> = { ios: "iOS", android: "Android" };
@@ -182,6 +212,9 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   const grace = deps.startingGraceMs ?? DEFAULT_STARTING_GRACE_MS;
   const portRelease = deps.portRelease ?? DEFAULT_PORT_RELEASE;
   const sessions = new Map<string, Session>();
+  const earlyExitCheckMs = deps.earlyExitCheckMs ?? DEFAULT_EARLY_EXIT_CHECK_MS;
+  /** 啟動後程序立即消失的桌面服務（目標 id → 服務名稱）；重新啟動或結束時清掉。 */
+  const earlyExits = new Map<string, Set<string>>();
   /** 每個目標在這次 GitNRun 執行期間只嘗試認回一次，避免每次刷新畫面都重新讀檔、重新探測。 */
   const reconciledTargets = new Set<string>();
 
@@ -221,38 +254,32 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   /** 候選掃描要讀好幾個檔案，畫面每幾秒就刷新一次，所以同一個目標短時間內沿用上次的結果。 */
   const candidateCache = new Map<string, { at: number; list: PasscodeBinding[] }>();
 
-  /** Debug 密碼的來源與狀態；明文只在這裡經手，只留下狀態與末四碼。 */
-  const passcodeSourceOf = async (target: Target, scan: { frameworks: ReadonlyArray<string | null>; serviceDirs: readonly string[] }): Promise<PasscodeSourceView> => {
-    const binding = getPasscodeBinding(db, target.id);
-    if (binding !== null) {
+  /**
+   * Debug 密碼的來源與狀態；明文只在這裡經手，只留下狀態與末四碼。
+   * 所有專案走同一條路：沒綁定就掃環境檔，只找到一個候選且使用者沒手動解除過就自動綁定，多個候選交給使用者選。
+   */
+  const passcodeSourceOf = async (target: Target, scan: { serviceDirs: readonly string[] }): Promise<PasscodeSourceView> => {
+    const bound = async (binding: PasscodeBinding): Promise<PasscodeSourceView> => {
       const read = await deps.passcodeSource.read(target.folder, binding);
       return { binding, state: read.state, hint: read.value === null ? "" : secretHint(read.value), candidates: [] };
-    }
+    };
+    const existing = getPasscodeBinding(db, target.id);
+    if (existing !== null) return bound(existing);
     const now = deps.now();
     const cached = candidateCache.get(target.id);
+    let list: PasscodeBinding[];
     if (cached !== undefined && now - cached.at < CANDIDATE_CACHE_MS) {
-      return { binding: null, state: "unbound", hint: "", candidates: cached.list };
+      list = cached.list;
+    } else {
+      list = await deps.passcodeSource.scan(target.folder, scan).catch(() => []);
+      candidateCache.set(target.id, { at: now, list });
     }
-    const list = scan.frameworks.some((framework) => framework !== null) ? await deps.passcodeSource.scan(target.folder, scan).catch(() => []) : [];
-    candidateCache.set(target.id, { at: now, list });
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only !== undefined && !isPasscodeAutoBindBlocked(db, target.id)) {
+      setPasscodeBinding(db, target.id, only);
+      return bound(only);
+    }
     return { binding: null, state: "unbound", hint: "", candidates: list };
-  };
-
-  /**
-   * 舊版只認 toBloom、stockpaw 兩個專案的環境檔。第一次載入時，把它們仍有原本的鍵的目標轉成正式綁定，之後不再依資料夾名稱判斷。
-   * 還沒有任何目標時先不標記完成，等有專案可遷移再做。
-   */
-  const migrateLegacyBindings = async (): Promise<void> => {
-    if (isPasscodeMigrated(db)) return;
-    const all = targets();
-    if (all.length === 0) return;
-    for (const target of all) {
-      const legacy = legacyPasscodeBinding(target.folder);
-      if (legacy === null || getPasscodeBinding(db, target.id) !== null) continue;
-      const read = await deps.passcodeSource.read(target.folder, legacy);
-      if (read.state === "ok" || read.state === "empty") setPasscodeBinding(db, target.id, legacy);
-    }
-    markPasscodeMigrated(db);
   };
 
   /** 服務目前的狀態：有配置過 port 且正在監聽 = 執行中；剛送出指令還沒監聽 = 啟動中。 */
@@ -330,7 +357,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       const errors = loaded.status === "invalid" ? loaded.errors : [];
       return {
         ...base,
-        passcodeSource: await passcodeSourceOf(target, { frameworks: [], serviceDirs: [] }),
+        passcodeSource: await passcodeSourceOf(target, { serviceDirs: [] }),
         manifest,
         errors,
         trusted: false,
@@ -341,6 +368,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     const session = await reconcileSession(target, loaded.manifest);
+    const recordedPorts = await deps.readPortsFile(target.folder);
     const services: RunServiceView[] = await Promise.all(
       loaded.manifest.services.map(async (spec) => {
         const { state, port } = await serviceState(session, spec.name);
@@ -348,7 +376,11 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           role: spec.role,
           state,
           hasPort: spec.port,
-          hasSession: !spec.port && session?.startedAt[spec.name] !== undefined
+          hasSession: !spec.port && session?.startedAt[spec.name] !== undefined,
+          // 有 port 的服務：記得 port、記錄檔有、或固定 port；桌面類服務可能留有殘留程序，一律可按。
+          releasable:
+            isDesktopLike(spec) ||
+            (spec.port && (port !== null || session?.ports[spec.name] !== undefined || recordedPorts?.[spec.name] !== undefined || spec.fixedPort !== undefined))
         };
         return {
           name: spec.name,
@@ -357,6 +389,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           fixedPort: spec.fixedPort ?? null,
           url: port === null ? null : urlForPort(port),
           state,
+          ...(earlyExits.get(target.id)?.has(spec.name) === true ? { exitedEarly: true } : {}),
           command: describeCommand(spec),
           framework: (await deps.detectFramework?.(target.folder, spec).catch(() => null)) ?? null,
           buttons: runServiceButtonStates(serviceForButtons, itermAvailable)
@@ -364,7 +397,6 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       })
     );
     const passcodeSource = await passcodeSourceOf(target, {
-      frameworks: services.map((service) => service.framework),
       serviceDirs: loaded.manifest.services.map((spec) => serviceDirectory(target.folder, spec.cwd))
     });
     return {
@@ -450,13 +482,17 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   /** 這次結束的服務裡，有哪些手機平台就關哪些模擬器（iOS 在前）；只關開過的平台，一般服務不動。 */
   const closeSimulators = async (
     target: Target,
-    names: readonly string[]
+    names: readonly string[],
+    specs: readonly RunServiceSpec[] = []
   ): Promise<{ platforms: MobilePlatform[]; failure: RunActionResult | null }> => {
     const used = new Set(names.map((name) => mobilePlatformOf(name)));
     const platforms = (["ios", "android"] as const).filter((platform) => used.has(platform));
     let failure: RunActionResult | null = null;
     for (const platform of platforms) {
-      const result = await deps.closeSimulator(platform);
+      // iOS 只關這個專案服務綁定的那台，避免連帶關掉別的專案的模擬器。
+      const iosService = platform === "ios" ? specs.find((spec) => names.includes(spec.name) && mobilePlatformOf(spec.name) === "ios") : undefined;
+      const deviceId = iosService === undefined ? null : iosDeviceIdOf(iosService.command);
+      const result = await deps.closeSimulator(platform, deviceId);
       if (result.code === 0) continue;
       const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
       log("warn", `已結束 ${target.label}，但無法關閉 ${SIMULATOR_LABEL[platform]} 模擬器：${detail}`);
@@ -465,11 +501,140 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { platforms, failure };
   };
 
+  /** 角色是 desktop、也不是手機的服務（桌面 app，有沒有 port 都算）：關掉視窗後程序可能還活著，GitNRun 只能靠程序清單找到它。 */
+  const isDesktopLike = (spec: RunServiceSpec): boolean => spec.role === "desktop" && mobilePlatformOf(spec.name) === null;
+
+  /** 只有涉及桌面類服務時才找資料夾裡的殘留程序；掃描失敗當作沒有，不擋住啟動與結束。 */
+  const findStale = async (target: Target, specs: readonly RunServiceSpec[]): Promise<StaleProcess[]> => {
+    if (deps.staleProcesses === undefined || !specs.some(isDesktopLike)) return [];
+    try {
+      return await deps.staleProcesses.scan(target.folder);
+    } catch (error) {
+      log("warn", `無法檢查 ${target.label} 的殘留程序：${error instanceof Error ? error.message : "未知錯誤"}`);
+      return [];
+    }
+  };
+
+  /** 結束殘留程序；全部結束回傳 null，有結束不掉的回傳失敗結果。 */
+  const endStale = async (target: Target, list: readonly StaleProcess[]): Promise<RunActionResult | null> => {
+    if (deps.staleProcesses === undefined || list.length === 0) return null;
+    const { failed } = await deps.staleProcesses.end(list);
+    if (failed.length > 0) {
+      const pids = failed.map((item) => item.pid).join("、");
+      log("warn", `無法結束 ${target.label} 的殘留程序：PID ${pids}`);
+      return fail("failed", `無法結束殘留程序（PID ${pids}），請到活動監視器處理`);
+    }
+    log("info", `已結束 ${target.label} 的 ${list.length} 個殘留程序`, { pids: list.map((item) => item.pid) });
+    return null;
+  };
+
+  /** 沒有任何記錄的服務，但資料夾裡有殘留程序：只清程序。 */
+  const stopStaleOnly = async (target: Target, list: readonly StaleProcess[]): Promise<RunActionResult> =>
+    (await endStale(target, list)) ?? { ok: true, message: `已結束 ${list.length} 個殘留程序` };
+
+  /**
+   * 釋放單一服務的 port 與殘留程序：port 取 session、.dev/ports.json 與固定 port 的聯集，不要求目前探測得到。
+   * GitNRun 重開、記錄遺失之後，舊程序還占著 port 時就靠這裡清乾淨；只動這個服務，不影響同專案其他服務。
+   */
+  const release = async (target: Target, manifest: RunManifest, serviceName: string): Promise<RunActionResult> => {
+    const spec = manifest.services.find((item) => item.name === serviceName);
+    if (!spec) {
+      return fail("unknown-service", "找不到這個服務");
+    }
+    const session = sessions.get(target.id);
+    const recorded = await deps.readPortsFile(target.folder);
+    const candidates = spec.port ? [session?.ports[spec.name], recorded?.[spec.name], spec.fixedPort] : [];
+    const known = [...new Set(candidates.filter((port): port is number => port !== undefined))];
+    const listening: number[] = [];
+    for (const port of known) {
+      if (await deps.probe(port)) listening.push(port);
+    }
+    const stale = await findStale(target, [spec]);
+    const hadSession = session?.startedAt[spec.name] !== undefined;
+    if (known.length === 0 && stale.length === 0 && !hadSession) {
+      return fail("nothing-to-do", "沒有需要釋放的 port");
+    }
+
+    // 只有真的要結束別人的程序才需要確認；沒有任何程序在跑時只是清掉記錄與分頁。
+    if (listening.length > 0 || stale.length > 0) {
+      const allowed = (await deps.confirmRelease?.({ label: target.label, service: spec.name, folder: target.folder, ports: listening, processes: stale })) === true;
+      if (!allowed) {
+        log("warn", `已取消釋放 ${target.label} 的 ${spec.name}`);
+        return fail("denied", "你取消了釋放，沒有結束任何程序");
+      }
+    }
+
+    if (listening.length > 0) {
+      const result = await deps.stopPorts(listening);
+      if (result.code !== 0) {
+        const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
+        log("warn", `無法釋放 ${target.label} 的 ${spec.name}：${detail}`);
+        return fail("failed", `無法釋放：${detail}`);
+      }
+      const busyPort = await waitForPortsFree(listening);
+      if (busyPort !== null) {
+        log("warn", `無法釋放 ${target.label} 的 ${spec.name}：port ${busyPort} 仍被占用`);
+        return fail("failed", `port ${busyPort} 仍被占用，可能是其他使用者的程序，請到活動監視器處理`);
+      }
+    }
+    const staleFailure = await endStale(target, stale);
+    if (staleFailure !== null) return staleFailure;
+
+    if (session) {
+      delete session.ports[spec.name];
+      delete session.startedAt[spec.name];
+      if (Object.keys(session.ports).length === 0 && Object.keys(session.startedAt).length === 0) sessions.delete(target.id);
+    }
+    earlyExits.get(target.id)?.delete(spec.name);
+    const remaining: Record<string, PortsFileService> = {};
+    for (const item of manifest.services) {
+      const port = sessions.get(target.id)?.ports[item.name];
+      if (item.port && port !== undefined) remaining[item.name] = { role: item.role, port };
+    }
+    await deps.writePortsFile(target.folder, remaining, deps.now());
+
+    let tabNote = "";
+    if (hadSession && deps.itermAvailable()) {
+      const closed = await deps.closeTabs([runSessionName(target.id, spec.name)]);
+      if (closed.code !== 0) {
+        log("warn", `已釋放 ${target.label} 的 ${spec.name}，但無法關閉 iTerm2 分頁：${closed.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤"}`);
+        tabNote = "，但分頁沒有關閉";
+      }
+    }
+
+    const parts = [
+      listening.length > 0 ? `port ${listening.join("、")}` : null,
+      stale.length > 0 ? `${stale.length} 個殘留程序` : null
+    ].filter((part): part is string => part !== null);
+    const summary = parts.length > 0 ? `已釋放 ${spec.name}：${parts.join("、")}` : `${spec.name} 沒有程序在占用，已清掉啟動記錄`;
+    log("info", `${summary}（${target.label}）`);
+    return { ok: true, message: `${summary}${tabNote}` };
+  };
+
+  /**
+   * 桌面服務啟動一小段時間後，資料夾裡已經沒有任何開發程序，代表它一啟動就退出了（例如被單一實例鎖擋掉）。
+   * 分頁只會看到指令一閃而過，所以在畫面標示出來；期間被重新啟動或結束就不判斷。
+   */
+  const watchEarlyExit = async (target: Target, names: readonly string[], startedAt: number): Promise<void> => {
+    if (deps.staleProcesses === undefined || earlyExitCheckMs <= 0) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, earlyExitCheckMs));
+    const session = sessions.get(target.id);
+    const current = names.filter((name) => session?.startedAt[name] === startedAt);
+    if (current.length === 0) return;
+    const alive = await deps.staleProcesses.scan(target.folder).catch(() => null);
+    if (alive === null || alive.length > 0) return;
+    const set = earlyExits.get(target.id) ?? new Set<string>();
+    for (const name of current) set.add(name);
+    earlyExits.set(target.id, set);
+    log("warn", `${target.label} 啟動後程序立即退出：${current.join("、")}`);
+  };
+
   /** names 為 undefined 時結束整個專案；否則只結束指定的這組服務。重新啟動也走這裡，結束的行為與「結束」按鈕一致。 */
   const stop = async (target: Target, manifest: RunManifest, names?: readonly string[]): Promise<RunActionResult> => {
     const session = sessions.get(target.id);
+    const stale = await findStale(target, manifest.services.filter((spec) => names === undefined || names.includes(spec.name)));
     if (!session) {
-      return fail("nothing-to-do", "尚未啟動");
+      return stale.length > 0 ? stopStaleOnly(target, stale) : fail("nothing-to-do", "尚未啟動");
     }
     if (names !== undefined && names.some((name) => !manifest.services.some((spec) => spec.name === name))) {
       return fail("unknown-service", "找不到這個服務");
@@ -493,7 +658,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         sessions.delete(target.id);
         await deps.writePortsFile(target.folder, {}, deps.now());
       }
-      return fail("nothing-to-do", "尚未啟動");
+      return stale.length > 0 ? stopStaleOnly(target, stale) : fail("nothing-to-do", "尚未啟動");
     }
 
     if (active.length > 0) {
@@ -504,11 +669,14 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         return fail("failed", `無法結束：${detail}`);
       }
     }
+    const staleFailure = await endStale(target, stale);
+    if (staleFailure !== null) return staleFailure;
 
     // 程序已停止，狀態先清掉；分頁關不掉時不能讓畫面還以為服務在跑。
     for (const name of opened) {
       delete session.ports[name];
       delete session.startedAt[name];
+      earlyExits.get(target.id)?.delete(name);
     }
     if (Object.keys(session.ports).length === 0 && Object.keys(session.startedAt).length === 0) {
       sessions.delete(target.id);
@@ -540,7 +708,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     // 手機服務結束時連模擬器一起關；分頁關不掉也照關，兩邊的失敗各自記錄。
-    const simulators = await closeSimulators(target, opened);
+    const simulators = await closeSimulators(target, opened, manifest.services);
     if (tabFailure !== null) return tabFailure;
     if (simulators.failure !== null) return simulators.failure;
 
@@ -584,7 +752,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     for (const spec of fixedToLaunch) {
       const port = spec.fixedPort as number;
       if (await deps.probe(port) && (!restart || reuse[spec.name] !== port)) {
-        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；請先釋放該 port，沒有改用其他號碼`);
+        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；請按該服務列的「釋放 port」，沒有改用其他號碼`);
       }
     }
 
@@ -628,7 +796,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     for (const spec of fixedToLaunch) {
       const port = spec.fixedPort as number;
       if (await deps.probe(port)) {
-        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；沒有啟動`);
+        return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；請按該服務列的「釋放 port」，沒有啟動`);
       }
     }
 
@@ -640,6 +808,34 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       name: runSessionName(target.id, item.name),
       command: item.commandLine
     }));
+
+    // 桌面 app 常有單一實例鎖：舊的還留在背景時，新的會被擋掉並立刻退出，所以先找殘留程序，確認後結束再啟動。
+    // 同專案有 port 服務正在跑時分不出哪些是它們的程序，這時跳過，交給啟動後的立即退出偵測。
+    const desktopStarts = plan.starts.filter((item) => manifest.services.some((spec) => spec.name === item.name && isDesktopLike(spec)));
+    const portServices = manifest.services.filter((spec) => spec.port);
+    const portBusy = (await Promise.all(portServices.map((spec) => serviceState(session, spec.name)))).some((item) => item.state !== "stopped");
+    const stale = portBusy ? [] : await findStale(target, manifest.services.filter((spec) => desktopStarts.some((item) => item.name === spec.name)));
+    if (stale.length > 0) {
+      const allowed = (await deps.confirmStale?.({ label: target.label, folder: target.folder, processes: stale })) === true;
+      if (!allowed) {
+        log("warn", `已取消啟動 ${target.label}：資料夾裡還有 ${stale.length} 個殘留程序`);
+        return fail("denied", `${target.label} 還有 ${stale.length} 個舊程序在背景執行，沒有啟動；請先結束它們`);
+      }
+      const staleFailure = await endStale(target, stale);
+      if (staleFailure !== null) return staleFailure;
+    }
+
+    // iOS 服務綁定的模擬器先開機並補上自己的視窗；失敗只記錄，不擋後面的啟動。
+    if (deps.prepareSimulator !== undefined) {
+      for (const item of plan.starts) {
+        if (mobilePlatformOf(item.name) !== "ios") continue;
+        const spec = manifest.services.find((candidate) => candidate.name === item.name);
+        const udid = spec === undefined ? null : iosUdidOfCommand(spec.command);
+        if (udid === null) continue;
+        const prepared = await deps.prepareSimulator(udid);
+        log(prepared.ok ? "info" : "warn", `${target.label} ${item.name}：${prepared.message}`);
+      }
+    }
 
     const result = await deps.launchTabs(tabs);
     if (result.code !== 0) {
@@ -664,6 +860,9 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       if (!plan.starts.some((item) => item.name === name)) next.ports[name] = port;
     }
     sessions.set(target.id, next);
+    for (const item of desktopStarts) earlyExits.get(target.id)?.delete(item.name);
+    const watched = desktopStarts.filter((item) => manifest.services.some((spec) => spec.name === item.name && isNodeStyleCommand(spec.command))).map((item) => item.name);
+    if (watched.length > 0) void watchEarlyExit(target, watched, now);
 
     const known: Record<string, PortsFileService> = {};
     for (const spec of manifest.services) {
@@ -747,7 +946,6 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
   return {
     async overview() {
       const itermAvailable = deps.itermAvailable();
-      await migrateLegacyBindings();
       return {
         iterm: itermAvailable,
         targets: await Promise.all(targets().map((target) => viewOf(target, itermAvailable)))
@@ -775,6 +973,9 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       }
       if (action.scope === "project") {
         return stop(target, loaded.manifest);
+      }
+      if (action.action === "release") {
+        return release(target, loaded.manifest, action.service);
       }
       if (action.action === "web") {
         return openWeb(target, loaded.manifest, action.service);
@@ -846,6 +1047,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         throw new UserFacingError("環境檔需是專案內的 .env、.env.local、.env.development、.env.development.local 或 .dev.vars，鍵名需是大寫英數與底線，且不能是 NEXT_PUBLIC_、VITE_ 這類會公開的前綴");
       }
       setPasscodeBinding(db, targetId, normalized);
+      setPasscodeAutoBindBlocked(db, targetId, false);
       candidateCache.delete(targetId);
     },
 
@@ -854,6 +1056,14 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
         throw new UserFacingError("找不到這個專案");
       }
       setPasscodeBinding(db, targetId, null);
+      setPasscodeAutoBindBlocked(db, targetId, true);
+      candidateCache.delete(targetId);
+    },
+
+    recheckPasscode(targetId) {
+      if (!findTarget(targetId)) {
+        throw new UserFacingError("找不到這個專案");
+      }
       candidateCache.delete(targetId);
     },
 

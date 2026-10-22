@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { errorMessage } from "@shared/format";
 import { useProjectHead, type ProjectHeadAttrs } from "./hooks";
+import { DebugAccountActions } from "./DebugAccountActions";
+import { DebugPasswordActions } from "./DebugPasswordActions";
 import {
   MOBILE_PLATFORM_LABEL,
   RUN_STATE_LABEL,
   displayServiceName,
   groupRunServices,
   mobilePlatformOf,
-  passcodeProblem,
-  passcodeStateText,
   planMobileStop,
   summarizeMobileState,
   type MobilePlatform,
-  type PasscodeBinding,
   type RunAction,
   type RunButtonState,
   type RunOverview,
@@ -21,6 +20,7 @@ import {
   type RunTargetView
 } from "@shared/run";
 import { countUngroupedRunTargets, type RunGroup } from "@shared/run-groups";
+import { serviceHintOf } from "@shared/run-hints";
 import {
   EMPTY_RUN_ORDER,
   buildRunOrderEntries,
@@ -32,7 +32,7 @@ import {
   sortByOpenIssues,
   type RunOrder
 } from "@shared/run-order";
-import { formatGroupIssueTotal, isIssueSkippedGroup, summarizeIssueGroup } from "@shared/git-lite";
+import { isIssueSkippedGroup } from "@shared/git-lite";
 import { ChangeBadge } from "./ChangeBadge";
 import { IssueSection, useIssueDisplayPref, useIssueFeed } from "./IssueSection";
 import { RunOrderEditor, RunSortSwitch, useRunOrderPref, useRunSortModePref } from "./RunOrderEditor";
@@ -49,6 +49,14 @@ const ENABLED: RunButtonState = { enabled: true, reason: null };
 /** 標籤優先顯示偵測到的框架，辨識不出來才退回角色。 */
 const serviceBadgeLabel = (service: RunServiceView): string =>
   service.framework ?? (mobilePlatformOf(service.name) !== null ? "手機" : ROLE_LABEL[service.role]);
+
+/** 服務標題的平台色：名稱含 mobile 片段（或是 iOS／Android）為橘色，含 web 片段為紫色，其餘維持預設黑色。 */
+const platformTone = (name: string): string => {
+  const segments = name.toLowerCase().split("-");
+  if (mobilePlatformOf(name) !== null || segments.includes("mobile")) return " platform-mobile";
+  if (segments.includes("web")) return " platform-web";
+  return "";
+};
 
 const startLabel = (service: RunServiceView): string => {
   const platform = mobilePlatformOf(service.name);
@@ -162,143 +170,6 @@ const PathCopyButton = ({ path, missing }: { path: string; missing?: boolean }) 
   );
 };
 
-/** Debug 密碼的來源與設定：密碼只留在專案的環境檔，GitNRun 只讀取；這裡只管「讀哪個檔的哪個鍵」。 */
-const DebugPasswordActions = ({
-  target,
-  onChanged,
-  onMessage
-}: {
-  target: RunTargetView;
-  onChanged: () => void;
-  onMessage: (ok: boolean, text: string) => void;
-}) => {
-  const source = target.passcodeSource;
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [file, setFile] = useState("");
-  const [key, setKey] = useState("");
-  const canCopy = source.state === "ok";
-  const canOpenFile = source.state !== "unbound" && source.state !== "no-file" && source.state !== "unsafe";
-
-  /** 各動作共用：忙碌旗標、錯誤顯示，完成後刷新總覽。 */
-  const perform = async (work: () => Promise<void>, done?: string): Promise<void> => {
-    setBusy(true);
-    setError("");
-    try {
-      await work();
-      onChanged();
-      if (done !== undefined) onMessage(true, `${target.label}：${done}`);
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copy = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      await window.gitNRun.copyRunPasscode(target.id);
-      onMessage(true, `${target.label}：已複製 Debug 密碼，剪貼簿會在 60 秒後清除`);
-    } catch (cause) {
-      onMessage(false, `${target.label}：${errorMessage(cause)}`);
-      onChanged();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const bind = (binding: PasscodeBinding): Promise<void> =>
-    perform(async () => {
-      await window.gitNRun.bindRunPasscode(target.id, binding);
-      setFile("");
-      setKey("");
-    }, `已指定 Debug 密碼來源：${binding.file} 的 ${binding.key}`);
-
-  /** 取消設定成功才收起面板；失敗時維持展開，錯誤訊息才看得到。 */
-  const unbind = (): Promise<void> =>
-    perform(async () => {
-      await window.gitNRun.unbindRunPasscode(target.id);
-      setOpen(false);
-    }, "已取消設定 Debug 密碼");
-
-  return (
-    <div className="run-password-actions">
-      <button type="button" disabled={!canCopy || busy} title={canCopy ? undefined : passcodeProblem(source.state, source.binding)} onClick={() => void copy()}>
-        複製 Debug 密碼
-      </button>
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-        設定密碼
-      </button>
-      {open ? (
-        <div className="run-password-panel">
-          <p className="run-password-status">
-            {source.binding === null ? (
-              "尚未指定密碼來源"
-            ) : (
-              <>
-                專案環境檔 · <span className="mono">{source.binding.file}</span> · <span className="mono">{source.binding.key}</span> ·{" "}
-                {source.state === "ok" ? `已讀到${source.hint === "" ? "" : `，末四碼 ${source.hint}`}` : <span className="warn">{passcodeStateText(source.state)}</span>}
-              </>
-            )}
-          </p>
-          {source.binding !== null ? (
-            <div className="run-password-row">
-              <button
-                type="button"
-                disabled={busy || !canOpenFile}
-                title={canOpenFile ? undefined : passcodeStateText(source.state)}
-                onClick={() => void perform(() => window.gitNRun.openRunPasscodeFile(target.id))}
-              >
-                開啟環境檔
-              </button>
-              <button type="button" disabled={busy} onClick={() => onChanged()}>
-                重新檢查
-              </button>
-              <button type="button" disabled={busy} onClick={() => void unbind()}>
-                取消設定密碼
-              </button>
-              <span className="muted">要改密碼，請直接編輯這個環境檔；每次複製都會重新讀取。</span>
-            </div>
-          ) : (
-            <>
-              {source.candidates.length > 0 ? (
-                <div className="run-password-row">
-                  <span className="muted">偵測到：</span>
-                  {source.candidates.map((candidate) => (
-                    <button key={`${candidate.file}:${candidate.key}`} type="button" disabled={busy} onClick={() => void bind(candidate)}>
-                      使用 {candidate.file} 的 {candidate.key}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <form
-                className="run-password-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void bind({ file: file.trim(), key: key.trim() });
-                }}
-              >
-                <input value={file} placeholder="環境檔，例如 .env" aria-label={`${target.label} 環境檔路徑`} autoComplete="off" spellCheck={false} onChange={(event) => setFile(event.target.value)} />
-                <input value={key} placeholder="鍵名，例如 DEBUG_PASSWORD" aria-label={`${target.label} 密碼鍵名`} autoComplete="off" spellCheck={false} onChange={(event) => setKey(event.target.value)} />
-                <button type="submit" disabled={busy || file.trim() === "" || key.trim() === ""}>
-                  指定環境檔
-                </button>
-              </form>
-            </>
-          )}
-          {error ? (
-            <span className="warn" role="alert">
-              {error}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-};
-
 const ServiceRow = ({
   target,
   service,
@@ -314,15 +185,21 @@ const ServiceRow = ({
   const restartAction: RunAction = { scope: "service", service: service.name, action: "restart" };
   const stopAction: RunAction = { scope: "service", service: service.name, action: "stop" };
   const webAction: RunAction = { scope: "service", service: service.name, action: "web" };
+  const releaseAction: RunAction = { scope: "service", service: service.name, action: "release" };
   const busy = (action: RunAction): boolean => busyKey !== "" && busyKey !== actionKey(target, action);
 
   return (
     <li className="run-service">
       <div className="run-service-main">
         <span className={`status-dot ${service.state}`} title={STATE_LABEL[service.state]} />
-        <span className="run-service-title">{displayServiceName(service.name)}</span>
+        <span className={`run-service-title${platformTone(service.name)}`} title={serviceHintOf(target.folder, service.name)}>{displayServiceName(service.name)}</span>
         <span className="badge run-framework">{serviceBadgeLabel(service)}</span>
         <span className="muted">{STATE_LABEL[service.state]}</span>
+        {service.exitedEarly ? (
+          <span className="warn" title="啟動後程序立即結束，可能已有舊的實例在背景執行，或啟動指令出錯；請看 iTerm2 分頁的輸出，或按「結束」清掉殘留後再啟動。">
+            啟動後立即退出
+          </span>
+        ) : null}
         {service.url ? <span className="mono">{service.url}</span> : null}
         {!service.url && service.fixedPort !== null ? <span className="mono muted">固定 http://localhost:{service.fixedPort}</span> : null}
       </div>
@@ -331,6 +208,7 @@ const ServiceRow = ({
         <ActionButton label="重新啟動" state={service.buttons.restart} busy={busy(restartAction)} onClick={() => onAction(restartAction)} />
         {service.buttons.stop.enabled ? <ActionButton label="結束" state={service.buttons.stop} busy={busy(stopAction)} onClick={() => onAction(stopAction)} /> : null}
         {service.role === "frontend" ? <ActionButton label="開網頁" state={service.buttons.web} busy={busy(webAction)} onClick={() => onAction(webAction)} /> : null}
+        <ActionButton label="釋放 port" state={service.buttons.release} busy={busy(releaseAction)} onClick={() => onAction(releaseAction)} />
         <CommandButton command={service.command} />
       </div>
     </li>
@@ -366,7 +244,7 @@ const MobileRow = ({
     <li className="run-service">
       <div className="run-service-main">
         <span className={`status-dot ${summary.state}`} title={summary.text} />
-        <span className="run-service-title">{displayServiceName(title)}</span>
+        <span className="run-service-title platform-mobile" title={serviceHintOf(target.folder, title)}>{displayServiceName(title)}</span>
         <span className="badge run-framework">{first === undefined ? "手機" : serviceBadgeLabel(first)}</span>
         <span className="muted">{summary.text}</span>
       </div>
@@ -429,6 +307,7 @@ const TargetRow = ({
           busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "readme" })}
           onClick={() => onAction({ scope: "project", action: "readme" })}
         />
+        <DebugAccountActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         <DebugPasswordActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         {target.buttons.stop.enabled ? (
           <ActionButton
@@ -444,10 +323,10 @@ const TargetRow = ({
           busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "reinstall" })}
           onClick={() => onAction({ scope: "project", action: "reinstall" })}
         />
+        <PathCopyButton path={target.folder} missing={target.source === "project" && target.pathExists === false} />
+        {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
       </div>
       {changes}
-      <PathCopyButton path={target.folder} missing={target.source === "project" && target.pathExists === false} />
-      {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
     </div>
 
     {target.manifest === "missing" ? (
@@ -516,7 +395,6 @@ export const RunView = ({
   const hasTargets = targets.length > 0;
   const canReorder = targets.length > 1 || targets.some((target) => groupRunServices(target.services).length > 1);
   const defaultOrderEntries = reordering ? buildRunOrderEntries(allTargets, group.id, EMPTY_RUN_ORDER) : [];
-  const issueSummary = summarizeIssueGroup(issueFeed, targets.map((target) => target.folder));
 
   const refresh = useCallback(() => {
     void window.gitNRun
@@ -562,15 +440,9 @@ export const RunView = ({
 
   return (
     <section>
-      {(hasTargets && showIssues) || group.id === "other" ? (
+      {group.id === "other" ? (
         <div className="run-hero">
-          {hasTargets && showIssues ? (
-            <div className="run-chips">
-              <span className="badge">{targets.length} 個專案</span>
-              {issueSummary.openIssues ? <span className="badge issue-chip">{formatGroupIssueTotal(issueSummary.openIssues)}</span> : null}
-            </div>
-          ) : null}
-          {group.id === "other" ? <p className="muted">這些專案的資料夾名稱不在分組表裡，所以先放在這裡。</p> : null}
+          <p className="muted">這些專案的資料夾名稱不在分組表裡，所以先放在這裡。</p>
         </div>
       ) : null}
       {overview && !overview.iterm ? <p className="warn">找不到 iTerm2，啟動類按鈕無法使用。</p> : null}
@@ -633,7 +505,7 @@ export const RunView = ({
               setMessage({ ok, text });
             }}
             order={savedOrder}
-            changes={<ChangeBadge feed={gitFeed} folder={target.folder} />}
+            changes={<ChangeBadge feed={gitFeed} folder={target.folder} label={target.label} />}
             issues={
               showIssues ? (
                 <IssueSection feed={issueFeed} folder={target.folder} label={target.label} onRetry={refreshIssues} onOpenSettings={onOpenSettings} />

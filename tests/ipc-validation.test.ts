@@ -119,6 +119,8 @@ describe("run page arguments", () => {
   it("accepts only a target id plus a known action object", () => {
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "stop" }]), ["p:3", { scope: "project", action: "stop" }]);
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "readme" }]), ["p:3", { scope: "project", action: "readme" }]);
+    assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "api", action: "release" }]), ["p:3", { scope: "service", service: "api", action: "release" }]);
+    assert.equal(asRunActionArgs(["p:3", { scope: "project", action: "release" }]), null);
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "reinstall" }]), ["p:3", { scope: "project", action: "reinstall" }]);
     assert.deepEqual(asRunActionArgs(["f:12", { scope: "service", service: "web", action: "web" }]), [
       "f:12",
