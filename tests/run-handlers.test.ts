@@ -427,8 +427,8 @@ describe("run handlers: one-click start", () => {
     h.listening.add(5174);
     h.listening.add(41001);
     ok(await h.handlers.run(target, serviceAction("web", "restart")));
-    assert.equal(h.launched[1]?.[0]?.command, "env PORT=5174 pnpm dev");
-    assert.equal(h.launched[1]?.[1]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
+    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), [`gitnrun p:${project.id} web`]);
+    assert.equal(h.launched[1]?.[0]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
   });
 
   it("refuses an occupied fixed port without launching or stopping its owner", async () => {
@@ -498,12 +498,39 @@ describe("run handlers: one-click start", () => {
     ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart")));
 
     assert.equal(h.launched.length, 2);
-    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), ["gitnrun p:1 api", "gitnrun p:1 web"]);
-    assert.equal(h.launched[1]?.[0]?.command, "env DEV_PORT=41001 FRONT=http://localhost:41002 pnpm dev");
-    assert.equal(h.launched[1]?.[1]?.command, "env PORT=41002 API=http://localhost:41001 pnpm dev");
-    assert.deepEqual(h.stopped, [[41001, 41002]]);
-    assert.deepEqual(h.closed, [["gitnrun p:1 api", "gitnrun p:1 web"]]);
+    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), ["gitnrun p:1 web"]);
+    assert.equal(h.launched[1]?.[0]?.command, "env PORT=41002 API=http://localhost:41001 pnpm dev");
+    assert.deepEqual(h.stopped, [[41002]]);
+    assert.deepEqual(h.closed, [["gitnrun p:1 web"]]);
     assert.deepEqual(h.written.at(-1)?.services, { api: { role: "backend", port: 41001 }, web: { role: "frontend", port: 41002 } });
+  });
+
+  it("restarting the frontend leaves the backend untouched, and restarting the backend leaves the frontend", async () => {
+    const h = harness();
+    const project = h.project();
+    const target = `p:${project.id}`;
+    await h.handlers.run(target, serviceAction("web", "start"));
+    h.listening.add(41001);
+    h.listening.add(41002);
+    ok(await h.handlers.run(target, serviceAction("api", "restart")));
+    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), [`gitnrun p:${project.id} api`]);
+    assert.deepEqual(h.stopped, [[41001]]);
+  });
+
+  it("starts the backend a frontend restart depends on when it is not running", async () => {
+    const h = harness();
+    const project = h.project();
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart")));
+    assert.deepEqual(h.launched[0]?.map((tab) => tab.name), [`gitnrun p:${project.id} api`, `gitnrun p:${project.id} web`]);
+  });
+
+  it("starts the shared backend only once when two frontends are started at the same time", async () => {
+    const h = harness();
+    const project = h.project();
+    const target = `p:${project.id}`;
+    await Promise.all([h.handlers.run(target, serviceAction("web", "start")), h.handlers.run(target, serviceAction("panel", "start"))]);
+    const names = h.launched.flat().map((tab) => tab.name);
+    assert.equal(names.filter((name) => name.endsWith(" api")).length, 1);
   });
 
   describe("restart ends the old services first", () => {
@@ -523,8 +550,8 @@ describe("run handlers: one-click start", () => {
 
       ok(result);
       assert.deepEqual(h.events, ["launch", "stopPorts", "closeTabs", "launch"]);
-      assert.match(result.message, /已結束 2 個服務並關閉終端機分頁：api、web，已在 iTerm2 重新開啟 2 個分頁：api、web/);
-      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["starting", "starting", "stopped"]);
+      assert.match(result.message, /已結束 1 個服務並關閉終端機分頁：web，已在 iTerm2 重新開啟 1 個分頁：web/);
+      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["running", "starting", "stopped"]);
     });
 
     it("does not open new tabs when the old services cannot be stopped", async () => {
@@ -589,7 +616,7 @@ describe("run handlers: one-click start", () => {
       const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
 
       assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
-      assert.match(result.message, /舊服務仍占用 port 41001/);
+      assert.match(result.message, /舊服務仍占用 port 41002/);
       assert.equal(h.launched.length, 1);
     });
   });

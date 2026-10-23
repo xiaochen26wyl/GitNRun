@@ -256,9 +256,7 @@ const MobileRow = ({
           return (
             <span className="run-platform" key={service.name}>
               <ActionButton label={`啟動 ${name}`} state={service.buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
-              {service.buttons.restart.enabled ? (
-                <ActionButton label={`重新啟動 ${name}`} state={service.buttons.restart} busy={busy(restartAction)} onClick={() => onAction(restartAction)} />
-              ) : null}
+              <ActionButton label={`重新啟動 ${name}`} state={service.buttons.restart} busy={busy(restartAction)} onClick={() => onAction(restartAction)} />
             </span>
           );
         })}
@@ -309,14 +307,12 @@ const TargetRow = ({
         />
         <DebugAccountActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         <DebugPasswordActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
-        {target.buttons.stop.enabled ? (
-          <ActionButton
-            label="結束全部"
-            state={target.buttons.stop}
-            busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "stop" })}
-            onClick={() => onAction({ scope: "project", action: "stop" })}
-          />
-        ) : null}
+        <ActionButton
+          label="結束全部"
+          state={target.buttons.stop}
+          busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "stop" })}
+          onClick={() => onAction({ scope: "project", action: "stop" })}
+        />
         <ActionButton
           label="重裝依賴"
           state={target.reinstall}

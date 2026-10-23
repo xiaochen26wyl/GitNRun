@@ -354,12 +354,17 @@ export type RunStartSelection = "all" | "desktop" | { service: string };
 /** 動作要啟動的服務（含前置服務），後端在前、前端其次、桌面最後，前置服務一定排在依賴它的服務之前。 */
 export const selectServices = (manifest: RunManifest, selection: RunStartSelection): RunServiceSpec[] => {
   const byName = new Map(manifest.services.map((service) => [service.name, service]));
+  const backends = manifest.services.filter((service) => service.role === "backend").map((service) => service.name);
+  // 前端與桌面版一律隱含依賴同專案的所有後端，不必在描述檔手寫 needs。
+  const depsOf = (service: RunServiceSpec): string[] =>
+    service.role === "backend" ? service.needs : [...new Set([...service.needs, ...backends])];
   const wanted = new Set<string>();
   const add = (name: string): void => {
     if (wanted.has(name)) return;
-    if (!byName.has(name)) return;
+    const service = byName.get(name);
+    if (service === undefined) return;
     wanted.add(name);
-    for (const dep of byName.get(name)?.needs ?? []) add(dep);
+    for (const dep of depsOf(service)) add(dep);
   };
   if (typeof selection === "object") {
     add(selection.service);
@@ -380,7 +385,7 @@ export const selectServices = (manifest: RunManifest, selection: RunStartSelecti
   const visit = (service: RunServiceSpec): void => {
     if (visited.has(service.name)) return;
     visited.add(service.name);
-    for (const dep of service.needs) {
+    for (const dep of depsOf(service)) {
       const target = byName.get(dep);
       if (target) visit(target);
     }

@@ -717,6 +717,18 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     return { ok: true, message: `已結束 ${opened.length} 個服務並關閉終端機分頁：${opened.join("、")}${simulatorNote}` };
   };
 
+  // 同專案的啟動排隊執行：後到的前端要等前一個送出分頁、記錄 session 後再評估，才不會把已在啟動的後端再開一次。
+  const startQueues = new Map<string, Promise<unknown>>();
+  const serializeStart = (target: Target, run: () => Promise<RunActionResult>): Promise<RunActionResult> => {
+    const result = (startQueues.get(target.id) ?? Promise.resolve()).then(run, run);
+    const tail = result.catch(() => undefined);
+    startQueues.set(target.id, tail);
+    void tail.then(() => {
+      if (startQueues.get(target.id) === tail) startQueues.delete(target.id);
+    });
+    return result;
+  };
+
   const start = async (
     target: Target,
     loaded: Extract<LoadedManifest, { status: "ok" }>,
@@ -734,24 +746,26 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
 
     // 已在執行或正在啟動的服務：沿用它的 port，不再啟動。
     let session = sessions.get(target.id) ?? { ports: {}, startedAt: {} };
+    // 重新啟動只動被點選的服務；被依賴帶進來的後端維持原狀（在跑就沿用、沒在跑才補啟動）。
+    const restartNames = new Set<string>(restart ? selected.filter((item) => typeof selection !== "object" || item.name === selection.service).map((item) => item.name) : []);
     const reuse: Record<string, number> = {};
     const skip = new Set<string>();
     for (const spec of manifest.services) {
       if (!spec.port) continue;
       const { state, port } = await serviceState(session, spec.name);
       if (state !== "stopped" && port !== null) {
-        if (spec.fixedPort !== undefined && port !== spec.fixedPort && (!restart || !selected.some((item) => item.name === spec.name))) {
+        if (spec.fixedPort !== undefined && port !== spec.fixedPort && !restartNames.has(spec.name)) {
           return fail("failed", `${spec.name} 正在使用 port ${port}；固定 port 已改為 ${spec.fixedPort}，請重新啟動該服務`);
         }
         reuse[spec.name] = port;
-        if (selected.some((item) => item.name === spec.name)) skip.add(spec.name);
+        if (selected.some((item) => item.name === spec.name) && !restartNames.has(spec.name)) skip.add(spec.name);
       }
     }
 
-    const fixedToLaunch = selected.filter((spec) => spec.fixedPort !== undefined && (restart || !skip.has(spec.name)));
+    const fixedToLaunch = selected.filter((spec) => spec.fixedPort !== undefined && (restartNames.has(spec.name) || !skip.has(spec.name)));
     for (const spec of fixedToLaunch) {
       const port = spec.fixedPort as number;
-      if (await deps.probe(port) && (!restart || reuse[spec.name] !== port)) {
+      if (await deps.probe(port) && (!restartNames.has(spec.name) || reuse[spec.name] !== port)) {
         return fail("failed", `${spec.name} 的固定 port ${port} 已被占用；請按該服務列的「釋放 port」，沒有改用其他號碼`);
       }
     }
@@ -779,12 +793,12 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     // reuse 在結束前已記下舊 port，所以新服務仍沿用同一組 port。
     let endedNote = "";
     if (restart) {
-      const ended = await stop(target, manifest, selected.map((item) => item.name));
+      const ended = await stop(target, manifest, [...restartNames]);
       if (!ended.ok && ended.reason !== "nothing-to-do") {
         return ended;
       }
       if (ended.ok) endedNote = `${ended.message}，`;
-      const oldPorts = selected.map((item) => reuse[item.name]).filter((port): port is number => port !== undefined);
+      const oldPorts = [...restartNames].map((name) => reuse[name]).filter((port): port is number => port !== undefined);
       const busyPort = await waitForPortsFree(oldPorts);
       if (busyPort !== null) {
         log("warn", `無法重新啟動 ${target.label}：舊服務仍占用 port ${busyPort}`);
@@ -802,7 +816,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
 
     const excluded = [...manifest.services.flatMap((spec) => spec.fixedPort === undefined ? [] : [spec.fixedPort]), ...Object.values(reuse)];
     const fresh = await deps.allocatePorts(countFreshPorts(manifest, reuse), excluded);
-    const plan = planStart(manifest, selection, reuse, restart ? new Set<string>() : skip, fresh);
+    const plan = planStart(manifest, selection, reuse, skip, fresh);
     const tabs: ItermTab[] = plan.starts.map((item) => ({
       dir: serviceDirectory(target.folder, item.cwd),
       name: runSessionName(target.id, item.name),
@@ -983,7 +997,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       if (action.action === "stop") {
         return stop(target, loaded.manifest, [action.service]);
       }
-      return start(target, loaded, { service: action.service }, action.action === "restart");
+      return serializeStart(target, () => start(target, loaded, { service: action.service }, action.action === "restart"));
     },
 
     async addFolder(path) {

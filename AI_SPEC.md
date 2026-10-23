@@ -70,7 +70,7 @@
 ### 設計原則
 
 - **狀態先於動作**：按鈕可不可按由資料層統一算出（`src/shared/run.ts` 的 `runButtonStates`、`runServiceButtonStates`、`reinstallButtonState`），畫面只負責顯示。不可按時按鈕反灰，並用 `title` 說明原因（例如「尚未啟動」「找不到 iTerm2」），不讓使用者按了才報錯。
-- **只在有意義時出現**：「結束」「結束全部」只在真的有東西可結束時才顯示；反灰是「現在不行但可能行」，不顯示是「這裡不會有這個動作」。
+- **只在有意義時出現**：「結束」只在真的有東西可結束時才顯示；專案層級的「結束全部」每個專案固定顯示，沒有東西可結束時反灰；反灰是「現在不行但可能行」，不顯示是「這裡不會有這個動作」。
 - **同一時間只做一件事**：任一動作進行中，其他動作按鈕一律禁用，避免重複觸發；批次動作（例如結束全部手機服務）前一步失敗仍繼續，最後合併成一則結果訊息。
 - **相關動作合併成一列**：同一個 App 的 iOS、Android 手機服務合併成一列，啟動各自獨立，結束共用一顆，依哪個平台在跑切換文字與對象。
 - **複製類動作即時回饋**：「指令」「複製路徑」「Debug 密碼」點下就複製，用按鈕文字短暫變成「已複製」或「複製失敗」回饋；指令另外展開浮層讓人看到複製了什麼；密碼明文不顯示在畫面上。
@@ -85,12 +85,12 @@
 | 按鈕 | 出現條件 | 可按條件 | 點擊行為 |
 |------|----------|----------|----------|
 | 啟動／開桌面 | 每個服務一顆；desktop 角色顯示「開桌面」，手機服務顯示「啟動 iOS」「啟動 Android」 | 找得到 iTerm2，且服務尚未執行 | 在 iTerm2 開新分頁啟動，動態 port 於此刻配置 |
-| 重新啟動 | 每個服務一顆 | 找得到 iTerm2，且服務已啟動 | 先結束舊服務並等 port 釋放，再用同一組 port 重開；任一步失敗就不開新分頁 |
+| 重新啟動 | 每個服務一顆 | 找得到 iTerm2，且服務已啟動 | 只結束被點選的服務並等 port 釋放，再用同一組 port 重開；它依賴的後端維持原狀（在跑就沿用、沒在跑才補啟動）；任一步失敗就不開新分頁 |
 | 結束 | 僅在該服務有可結束的 port 或啟動記錄時顯示 | 同左 | 依記錄的 port 結束監聽程序並關閉該分頁；手機列依在跑的平台決定對象 |
 | 開網頁 | 僅 frontend 角色 | 前端已在執行 | 開啟實際 `http://localhost:<port>`，不自動啟動服務 |
 | 指令 | 每個服務一顆（手機為「iOS 指令」「Android 指令」） | 永遠可按 | 複製顯示用指令並展開浮層 |
 | README | 專案名稱旁 | 專案根目錄有 `README.md` | 用 Cursor 開啟，找不到時反灰 |
-| 結束全部 | 專案層級，僅在該專案有任何可結束的服務時顯示 | 同左 | 結束該專案所有服務並清掉執行狀態與 `.dev/ports.json` |
+| 結束全部 | 專案層級，每個專案固定顯示 | 該專案有任何可結束的服務 | 結束該專案所有服務並清掉執行狀態與 `.dev/ports.json` |
 | 重裝依賴 | 專案層級 | 有 `package.json`、沒有服務在執行、找得到 iTerm2 | 刪除 `node_modules` 後以偵測到的套件管理員重裝 |
 | 複製路徑 | 專案層級 | 永遠可按 | 複製專案資料夾路徑，結果以按鈕文字短暫提示 |
 | Debug 密碼 | 專案層級 | 已綁定來源且環境檔讀得到該鍵 | 重新讀取環境檔並複製密碼；來源可在展開面板綁定、重選或解除 |
@@ -142,7 +142,8 @@
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
 - Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.gitnrun/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；結束或重新啟動時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令不是由此推測產生、找不到 UDID 時才退回關閉全部。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是作者自己的開發用 AVD，使用者必須換成自己的，且結束時仍會關掉所有 Android 模擬器；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
-- 「重新啟動」先結束舊服務（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
+- frontend、desktop 服務隱含依賴同專案所有 backend，不必手寫 `needs`；啟動任一前端會連帶啟動後端，後端已在跑則沿用。同專案的啟動動作排隊執行，同時啟動多個前端時後端只啟動一次。
+- 「重新啟動」只結束被點選的服務，不動它依賴的後端（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
 - 專案與 App 的手動排序：存在 renderer 的 localStorage（`gitnrun.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`gitnrun.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。
 - Issue 區塊：每個專案卡顯示該 repo 的 GitHub issues，預設只列前 5 筆（`ISSUE_PREVIEW_COUNT`），可展開；頁面可見時每 60 秒更新一次。哪些分組略過 Issue 區塊由 `src/shared/git-lite.ts` 的略過分組表決定（以分組 id 指定，跟著分組表走）。使用者可關閉 Issue 顯示（`gitnrun.run.showIssues`），關閉時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。沒有 GitHub remote、載入中、失敗（可重試）各有對應狀態。
 - Debug 密碼來源：專案設定可綁定專案環境檔裡的某個鍵，由 `src/main/run/passcode-source.ts` 讀取；只讀不寫、不保存，明文只在主程序經手，環境檔大小有上限（`MAX_PASSCODE_ENV_BYTES`）。

@@ -219,6 +219,20 @@ describe("placeholders", () => {
 });
 
 describe("selectServices and planStart", () => {
+  it("makes every frontend and desktop service depend on all backends without a written needs", () => {
+    const manifest = parsed(
+      manifestOf(service({ name: "api" }), service({ name: "web", role: "frontend" }), service({ name: "panel", role: "desktop", port: false }))
+    );
+    assert.deepEqual(selectServices(manifest, { service: "web" }).map((item) => item.name), ["api", "web"]);
+    assert.deepEqual(selectServices(manifest, { service: "panel" }).map((item) => item.name), ["api", "panel"]);
+    assert.deepEqual(selectServices(manifest, { service: "api" }).map((item) => item.name), ["api"]);
+  });
+
+  it("leaves projects without a backend unchanged", () => {
+    const manifest = parsed(manifestOf(service({ name: "web", role: "frontend" })));
+    assert.deepEqual(selectServices(manifest, { service: "web" }).map((item) => item.name), ["web"]);
+  });
+
   it("one-click start picks backends then frontends and skips desktop", () => {
     assert.deepEqual(selectServices(stack(), "all").map((item) => item.name), ["api", "web"]);
   });
