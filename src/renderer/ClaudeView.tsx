@@ -7,14 +7,15 @@ const COMMAND_GROUPS: CommandGroup[] = [
   {
     title: "終端機指令",
     items: [
-      { text: "claude --model sonnet", note: "以 Sonnet 模型啟動 Claude Code" }
+      { text: "claude --model opus", note: "以 Opus 5 模型啟動 Claude Code" },
+      { text: "claude --model claude-sonnet-5-5", note: "以 Sonnet 5.5 模型啟動 Claude Code" }
     ]
   },
   {
     title: "Claude 內指令",
     items: [
-      { text: "/model sonnet", note: "切換為 Sonnet" },
-      { text: "/model haiku", note: "切換為 Haiku" },
+      { text: "/model claude-sonnet-5-5", note: "切換為 Sonnet 5.5" },
+      { text: "/model fable", note: "切換為 Fable 4（token 消耗最多、耗時最慢）" },
       { text: "/clear", note: "清除目前對話內容" }
     ]
   },

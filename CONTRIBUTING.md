@@ -6,31 +6,32 @@
 
 ## 開發環境
 
-- macOS 或 Linux（CI 目前在 `macos-latest` 上跑）
+- macOS（CI 目前在 `macos-latest` 上跑）
 - Node 24
 - pnpm 9（版本由 `package.json` 的 `packageManager` 欄位指定）
+- Rust（cargo，用於 `src-tauri`）
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-SQLite 使用 Node／Electron 內建的 `node:sqlite`，不需要編譯原生模組。
+SQLite 使用 Node 內建的 `node:sqlite`，不需要編譯原生模組。
 
 ## 專案結構與層級邊界
 
 | 目錄 | 角色 |
 |------|------|
-| `src/main` | 主程序。**唯一**能碰 Node、網路與金鑰的層：監視器、規則引擎、執行器、AI、密鑰保險庫、啟動器、Webhook |
-| `src/preload` | `contextBridge` 橋接，只暴露 `src/shared/ipc.ts` 宣告的方法 |
-| `src/renderer` | React UI。不能 import Electron、Node 內建模組、主程序模組或保險庫 |
+| `src/main` | 核心（Node sidecar）。**唯一**能碰 Node、網路與金鑰的層：監視器、規則引擎、執行器、AI、密鑰保險庫、啟動器、Webhook |
+| `src-tauri` | Tauri 外殼（Rust）：視窗、原生能力、Keychain、核心行程管理；只暴露單一 `ipc_invoke` 指令 |
+| `src/renderer` | React UI。不能 import Electron／Tauri（`src/renderer/ipc/` 除外）、Node 內建模組、主程序模組或保險庫 |
 | `src/shared` | 型別、IPC 通道與純函式（驗證、範本、glob…），主程序與渲染層共用，不能有副作用 |
 | `tests/` | `node:test` 單元測試，檔名 `*.test.ts` |
 
 這些邊界由 `pnpm check:boundary` 強制（規則在 `scripts/boundary.ts`）：
 
 - `renderer`／`shared`：不得 import `electron`、Node 內建模組、`@main` 或任何 vault 模組。
-- `preload`：只允許 import `electron`，其餘同上。
+- `@tauri-apps/*`：只有 `src/renderer/ipc/` 可以引用。
 
 新增功能時請依這個原則放置程式碼：需要檔案系統、網路、子行程、金鑰的邏輯放在 `src/main`，畫面放在 `src/renderer`，兩邊都用得到的型別與純函式放在 `src/shared`。渲染層的 CSP 禁止任何對外連線，所有網路請求只能在主程序發生。
 

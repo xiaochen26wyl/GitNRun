@@ -9,7 +9,7 @@ import { MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from "@main/db/retention";
 import { DEFAULT_RETENTION_DAYS, SETTING_KEYS, getSetting, setSetting } from "@main/db/settings-repo";
 import { UserFacingError } from "@main/errors";
 
-/** 一般設定與備份還原的處理邏輯（與 Electron 無關，可直接測試）。 */
+/** 一般設定與備份還原的處理邏輯（與外殼無關，可直接測試）。 */
 
 export interface AppSettingsDeps {
   db: Db;

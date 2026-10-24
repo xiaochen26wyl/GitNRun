@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { deviceNameOf, iosUdidOfCommand, OPEN_SIMULATOR_WINDOW_SCRIPT } from "@shared/ios-simulator";
+import { bootedUdids, flutterRunsOnDevice, iosServiceAlive, deviceNameOf, iosUdidOfCommand, OPEN_SIMULATOR_WINDOW_SCRIPT } from "@shared/ios-simulator";
 import { ensureSimulatorWindow, type ExecResult, type SimulatorExec } from "@main/run/simulator-window";
 
 const DEV = "498D038D-9A95-4CB5-967C-B846B0E93DE8";
@@ -91,5 +91,27 @@ describe("ensureSimulatorWindow", () => {
     assert.equal((await ensureSimulatorWindow(DEV, bootFail.exec, noWait)).ok, false);
     assert.ok(!bootFail.calls.some((call) => call[0]?.endsWith("osascript")));
     assert.equal((await ensureSimulatorWindow("bad", missing.exec, noWait)).ok, false);
+  });
+});
+
+describe("iosServiceAlive", () => {
+  const booted = (...udids: string[]): string =>
+    JSON.stringify({ devices: { rt: udids.map((udid) => ({ udid, name: "x", state: "Booted" })).concat([{ udid: "OTHER", name: "y", state: "Shutdown" }]) } });
+  const ps = (udid: string): string =>
+    `-zsh\n/opt/flutter/bin/cache/dart-sdk/bin/dartvm --packages=/p.json /opt/flutter/bin/cache/flutter_tools.snapshot run -d ${udid} --dart-define=A=b\n`;
+
+  it("只收 Booted 的裝置", () => {
+    assert.deepEqual([...bootedUdids(booted(DEV))], [DEV]);
+    assert.equal(bootedUdids("not json").size, 0);
+  });
+  it("模擬器已開機且有 flutter run 綁著 → 執行中", () => {
+    assert.equal(iosServiceAlive({ simctlJson: booted(DEV2), psOutput: ps(DEV2), udid: DEV2 }), true);
+  });
+  it("只有模擬器開著、沒有 flutter run → 不算執行中", () => {
+    assert.equal(iosServiceAlive({ simctlJson: booted(DEV2), psOutput: "-zsh\n", udid: DEV2 }), false);
+  });
+  it("flutter run 綁的是另一台，或該台沒開機 → 不算執行中", () => {
+    assert.equal(flutterRunsOnDevice(ps(DEV), DEV2), false);
+    assert.equal(iosServiceAlive({ simctlJson: booted(DEV), psOutput: ps(DEV2), udid: DEV2 }), false);
   });
 });

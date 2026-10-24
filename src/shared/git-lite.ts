@@ -103,7 +103,7 @@ const ACTION_BY_ERROR_KIND: Record<GitLiteIssueErrorKind, IssueAction> = {
 const folderKey = (folder: string): string => normalizeFolderPath(folder);
 
 /** 不讀取 GitHub issues 的分組（專案啟動頁的頁籤）：主程序不會替這些分組的專案發出請求，畫面也不顯示 issue 區塊與開關。 */
-const ISSUE_SKIP_GROUP_IDS: ReadonlySet<RunGroupId> = new Set<RunGroupId>(["open-source", "personal"]);
+const ISSUE_SKIP_GROUP_IDS: ReadonlySet<RunGroupId> = new Set<RunGroupId>(["open-source"]);
 
 export const isIssueSkippedGroup = (id: RunGroupId): boolean => ISSUE_SKIP_GROUP_IDS.has(id);
 

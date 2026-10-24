@@ -1,0 +1,477 @@
+[
+  {
+    "accelerator": "Command+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Control+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Ctrl+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "CommandOrControl+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "CmdOrCtrl+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Alt+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Option+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "AltGr+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Shift+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Super+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Meta+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "cmd+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "CTRL+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+A",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+z",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+0",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+9",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Space",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Tab",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Backspace",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Delete",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Insert",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Return",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Enter",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Up",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Down",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Left",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Right",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Home",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+End",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+PageUp",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+PageDown",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Escape",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Esc",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+F1",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+F5",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+F12",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+F13",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+F24",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+`",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+~",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+!",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+@",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+#",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+$",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+%",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+^",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+&",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+*",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+(",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+)",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+_",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+=",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd++",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+[",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+]",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+{",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+}",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+;",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+:",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+'",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+\"",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+,",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+.",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+<",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+>",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+/",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+?",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+\\",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+|",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+-",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "CommandOrControl+Shift+T",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Shift+Return",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Ctrl+Alt+Shift+Space",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Cmd+Alt+Shift+Super+K",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Alt+1",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Command+Option+/",
+    "valid": true,
+    "rust": "ok"
+  },
+  {
+    "accelerator": "Shift++",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "Cmd+Shift++",
+    "valid": true,
+    "rust": "unsupported"
+  },
+  {
+    "accelerator": "T",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "F5",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+Shift",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+Cmd+T",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Hyper+T",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+Shift+TT",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+F25",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd + T",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+Shift+T+U",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "+",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "++",
+    "valid": false,
+    "rust": "invalid"
+  },
+  {
+    "accelerator": "Cmd+Shift+",
+    "valid": false,
+    "rust": "invalid"
+  }
+]

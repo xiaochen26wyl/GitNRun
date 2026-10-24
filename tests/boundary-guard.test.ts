@@ -30,7 +30,7 @@ describe("findViolations", () => {
   });
 
   it("fails any layer that reaches into the main process or the vault", () => {
-    for (const layer of ["renderer", "shared", "preload"] as const) {
+    for (const layer of ["renderer", "shared"] as const) {
       assert.equal(findViolations(layer, file(`import { x } from "@main/vault";`)).length >= 1, true);
       assert.equal(findViolations(layer, file(`import { x } from "../main/vault/store";`)).length >= 1, true);
       assert.equal(findViolations(layer, file(`import { x } from "@main/db";`)).length, 1);
@@ -39,9 +39,11 @@ describe("findViolations", () => {
     }
   });
 
-  it("lets preload import electron but nothing else from Node", () => {
-    assert.equal(findViolations("preload", file(`import { contextBridge } from "electron";`)).length, 0);
-    assert.equal(findViolations("preload", file(`import { join } from "node:path";`)).length, 1);
+  it("rejects electron in every layer", () => {
+    for (const layer of ["renderer", "shared"] as const) {
+      assert.equal(findViolations(layer, file(`import { app } from "electron";`)).length, 1);
+      assert.equal(findViolations(layer, file(`import x from "electron/main";`)).length, 1);
+    }
   });
 
   it("keeps shared pure", () => {
@@ -56,5 +58,20 @@ describe("findViolations", () => {
       import { App } from "./App";
     `;
     assert.deepEqual(findViolations("renderer", file(source)), []);
+  });
+});
+
+describe("tauri import boundary", () => {
+  const at = (path: string, source: string) => [{ path, source }];
+  const tauri = `import { invoke } from "@tauri-apps/api/core";`;
+
+  it("allows @tauri-apps only inside the renderer ipc folder", () => {
+    assert.equal(findViolations("renderer", at("src/renderer/ipc/install.ts", tauri)).length, 0);
+    assert.equal(findViolations("renderer", at("src/renderer/App.tsx", tauri)).length, 1);
+    assert.equal(findViolations("renderer", at("src/renderer/ipcish/x.ts", tauri)).length, 1);
+  });
+
+  it("never allows @tauri-apps in shared", () => {
+    assert.equal(findViolations("shared", at("src/shared/x.ts", tauri)).length, 1);
   });
 });

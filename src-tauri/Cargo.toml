@@ -1,0 +1,40 @@
+[package]
+name = "gitnrun"
+version = "0.1.0"
+description = "Local dev launcher for starting and restarting frontend/backend services."
+edition = "2021"
+rust-version = "1.80"
+publish = false
+
+[lib]
+name = "gitnrun_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# 全部釘在 Tauri 2 系列；crates.io 上的 3.0 alpha 不使用。
+[dependencies]
+tauri = { version = "2.12", features = ["devtools"] }
+tauri-plugin-single-instance = "2"
+# 外掛只從 Rust 端使用，不授權給 webview（capabilities 沒有開任何外掛權限）。
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+getrandom = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "io-util", "time", "macros", "process"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+objc2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = ["NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSPanel", "NSEvent", "NSMenu", "NSMenuItem", "NSGraphicsContext", "NSImage"] }

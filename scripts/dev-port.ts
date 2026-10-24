@@ -4,7 +4,7 @@ import { MANUAL_START_PORTS } from "../src/shared/reserved-ports";
 /**
  * GitNRun 自己的 dev server 要用哪個 port。
  * 沒指定 PORT 時從 Vite 的預設起點往後找，但撇除留給手動啟動的號碼（見 src/shared/reserved-ports.ts）；
- * 這個檔案由 electron.vite.config.ts 在啟動時載入，所以只能用 Node 內建模組與沒有別名的相對路徑。
+ * 這個檔案由 vite.config.ts 在啟動時載入，所以只能用 Node 內建模組與沒有別名的相對路徑。
  */
 
 /** Vite 的預設起點。 */

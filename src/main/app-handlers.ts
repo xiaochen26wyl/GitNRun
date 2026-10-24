@@ -27,7 +27,7 @@ import { executeStartWork, previewStartWork, type StartWorkDeps } from "@main/gi
 import type { LogEntry } from "@main/logger";
 import type { MonitorService } from "@main/monitor/service";
 
-/** 專案、事件、日誌、分支規則、監視器的 IPC 處理邏輯。與 Electron 無關，所以可以直接單元測試。 */
+/** 專案、事件、日誌、分支規則、監視器的 IPC 處理邏輯。與外殼無關，所以可以直接單元測試。 */
 
 export interface AppHandlerDeps {
   db: Db;

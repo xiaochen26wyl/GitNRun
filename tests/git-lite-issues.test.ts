@@ -195,9 +195,8 @@ describe("summarizeIssueGroup", () => {
 });
 
 describe("projects that do not read issues", () => {
-  it("skips the open-source and personal groups only", () => {
+  it("skips the Free (open-source) group only", () => {
     assert.equal(isIssueSkippedGroup("open-source"), true);
-    assert.equal(isIssueSkippedGroup("personal"), true);
     for (const id of ["saas", "creator", "someday", "other"] as const) {
       assert.equal(isIssueSkippedGroup(id), false, id);
     }

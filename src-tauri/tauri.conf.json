@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GitNRun",
+  "version": "../package.json",
+  "identifier": "com.gitnrun.app",
+  "build": {
+    "frontendDist": "../dist/renderer",
+    "beforeBuildCommand": "pnpm build:tauri"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg"
+    ],
+    "category": "DeveloperTool",
+    "icon": [
+      "../build/icon.png",
+      "../build/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/gitnrun-node"
+    ],
+    "resources": {
+      "../dist/sidecar/index.cjs": "sidecar/index.cjs"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "entitlements": "./entitlements.plist"
+    }
+  }
+}

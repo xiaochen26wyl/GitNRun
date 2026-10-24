@@ -99,7 +99,7 @@ const MODIFIERS = new Set(["command", "cmd", "control", "ctrl", "commandorcontro
 const KEY = /^([A-Za-z0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Tab|Backspace|Delete|Insert|Return|Enter|Up|Down|Left|Right|Home|End|PageUp|PageDown|Escape|Esc|[`~!@#$%^&*()_=+[\]{};:'",.<>/?\\|-])$/;
 
 /**
- * Electron accelerator 的格式檢查：至少一個修飾鍵（不允許單獨一個鍵，以免搶走一般輸入）、
+ * accelerator 的格式檢查：至少一個修飾鍵（不允許單獨一個鍵，以免搶走一般輸入）、
  * 剛好一個主鍵、修飾鍵不重複。
  */
 export const isValidAccelerator = (value: unknown): value is string => {

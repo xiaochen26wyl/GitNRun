@@ -41,15 +41,15 @@ import { registerWebhookIpc } from "@main/webhook/ipc";
 import { createWebhookReceiver } from "@main/webhook/receiver";
 
 /**
- * 與外殼（Electron、Tauri）無關的啟動流程：資料層、保險庫、監視器、規則引擎、啟動器，
+ * 與外殼無關的啟動流程：資料層、保險庫、監視器、規則引擎、啟動器，
  * 以及全部 IPC 通道的註冊。呼叫前必須先用 setNative() 裝好外殼。
- * 視窗、通道的實際掛接（Electron 的 ipcMain、Tauri 的 sidecar 連線）由各外殼自己負責。
+ * 視窗、通道的實際掛接（Tauri 的 sidecar 連線）由外殼負責。
  */
 
 export interface CoreOptions {
   /** 外部（網址、Dock）送來的開啟請求收件匣；外殼在核心啟動前就要開始往裡放。 */
   externalGate: ExternalOpenGate;
-  /** 加密方式由外殼決定（Electron 的 safeStorage、Tauri 的 Keychain 金鑰）。 */
+  /** 加密方式由外殼決定（Keychain 金鑰的 AES-GCM）。 */
   cipher: SecretCipher;
 }
 

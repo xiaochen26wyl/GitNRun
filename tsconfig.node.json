@@ -10,17 +10,19 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "types": ["node", "electron"],
+    "types": ["node"],
     "paths": {
       "@shared/*": ["./src/shared/*"],
       "@main/*": ["./src/main/*"]
     }
   },
   "include": [
-    "electron.vite.config.ts",
+    "vite.config.ts",
     "src/main/**/*.ts",
-    "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "src/renderer/ipc/create-api.ts",
+    "src/renderer/ipc/methods.ts",
+    "src/renderer/ipc/reload-policy.ts",
     "scripts/**/*.ts",
     "tests/**/*.ts"
   ]

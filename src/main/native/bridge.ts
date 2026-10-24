@@ -1,7 +1,7 @@
 import type { AppInfo } from "@shared/ipc";
 
 /**
- * 主程序需要「外殼」（Electron、Tauri）才能做的事，全部收在這個介面。
+ * 主程序需要「外殼」（Tauri）才能做的事，全部收在這個介面。
  * 核心邏輯只透過 native() 取用，不直接碰任何外殼 API，所以換外殼不用改核心。
  */
 

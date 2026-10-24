@@ -6,7 +6,7 @@ import { runValidated, type ArgsValidator } from "@main/ipc-validation";
  * 呼叫時先驗證入參，通過後才進到 handler。
  *
  * 這裡只管「通道 → 驗證 → handler」，與外殼無關；發送端是否可信、怎麼把呼叫送進來
- * （Electron 的 ipcMain、Tauri 的 sidecar 連線）由各外殼的轉接層負責，並且必須先擋掉不可信的發送端。
+ * （Tauri 的 sidecar 連線）由外殼的轉接層負責，並且必須先擋掉不可信的發送端。
  */
 
 type ChannelHandler = (rawArgs: readonly unknown[]) => Promise<unknown>;

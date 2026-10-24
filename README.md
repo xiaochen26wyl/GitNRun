@@ -2,7 +2,7 @@
 
 GitNRun 是本機優先的 GitHub 推送監視與開發啟動工具。所有資料都存在你的電腦上，不使用雲端資料庫；可監視 repo 推送、依規則自動通知或執行動作、輔助產生 AI commit 內容，並一鍵啟動專案常用服務。
 
-支援 macOS 與 Linux；部分終端機自動化功能目前以 macOS 為主。
+目前僅支援 macOS（Tauri 外殼，核心以內附 Node 執行）。
 
 ## 主要功能
 
@@ -14,16 +14,15 @@ GitNRun 是本機優先的 GitHub 推送監視與開發啟動工具。所有資�
 | 規則引擎 | 依分支、檔案、推送者、時間等條件觸發通知、Webhook、git、自訂 shell 或 AI 動作 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明；每個專案預設需手動允許 |
 | 一鍵終端機 | 將資料夾映射到常用指令，快速在終端機開啟並執行 |
-| 專案啟動 | 以 `.gitnrun/run.json` 描述前端、後端、桌面服務，可指定 `fixedPort` 或動態配置 port，再於 iTerm2 分頁啟動；每個專案有 README 按鈕可直接開啟 README.md；依資料夾名稱分成「開源Free、SAAS、創作者宇宙、自己用、遊戲需要美術」5 個頁籤，不在分組表內的專案出現在「其他」頁籤 |
+| 專案啟動 | 以 `.gitnrun/run.json` 描述前端、後端、桌面服務，可指定 `fixedPort` 或動態配置 port，再於 iTerm2 分頁啟動；每個專案有 README 按鈕可直接開啟 README.md；依資料夾名稱分成「Free、SAAS、創作者宇宙、遊戲需要美術」4 個頁籤，不在分組表內的專案出現在「其他」頁籤 |
 
 ## 安裝
 
-目前請從原始碼建置。需要 Node 24 與 pnpm 9。
+目前請從原始碼建置。需要 Node 24、pnpm 9 與 Rust（cargo 1.99 以上，由 rustup 安裝）。
 
 ```bash
 pnpm install
-pnpm dist:mac   # 產物在 release/，arm64 與 x64 各一份 DMG
-pnpm dist:linux # 產物在 release/，x64 AppImage 與 deb
+CI=true pnpm dist:mac   # 產物在 src-tauri/target/release/bundle/dmg/，目前為 arm64 DMG
 ```
 
 打包出的 App 未簽章也未公證。macOS 第一次開啟時若被 Gatekeeper 擋下，請到「系統設定 -> 隱私權與安全性」選擇仍要打開。
@@ -32,14 +31,15 @@ pnpm dist:linux # 產物在 release/，x64 AppImage 與 deb
 
 ```bash
 pnpm install
-pnpm dev
+pnpm dev   # 啟動 Tauri 開發版（同 pnpm dev:tauri）；port 讀環境變數 PORT
 pnpm typecheck
 pnpm check:boundary
 pnpm test:unit
 pnpm build && pnpm smoke:build
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-SQLite 使用 Node/Electron 內建的 `node:sqlite`，不需要額外編譯原生模組。
+SQLite 使用 Node 內建的 `node:sqlite`，不需要額外編譯原生模組。
 
 ## 本機環境檔
 
@@ -47,9 +47,9 @@ GitNRun 本身目前不需要專案根目錄環境檔；GitHub、AI、通知等�
 
 ## 架構
 
-- `src/main`：主程序，負責 Node、網路、金鑰、監視器、規則引擎、AI、啟動器與資料存取。
-- `src/preload`：透過 `contextBridge` 暴露受控 IPC API。
-- `src/renderer`：React UI，不直接 import Electron、Node、main 或保險庫程式。
+- `src/main`：核心（sidecar），以 Node 執行，負責網路、金鑰、監視器、規則引擎、AI、啟動器與資料存取；經 unix socket 與外殼溝通。
+- `src-tauri`：Tauri 外殼（Rust），負責視窗、選單、剪貼簿、對話框、通知、全域快捷鍵、Keychain 主金鑰，並管理核心行程。
+- `src/renderer`：React UI；`src/renderer/ipc/` 以 Tauri 單一指令重建 `window.gitNRun`，其餘程式不直接 import Tauri、Node、main 或保險庫程式。
 - `src/shared`：共用型別、IPC 通道與純函式。
 
 分層邊界由 `scripts/check-boundary.ts` 檢查。詳細需求、規格、安全邊界與 AI 續作資訊請看 [`AI_SPEC.md`](AI_SPEC.md)。

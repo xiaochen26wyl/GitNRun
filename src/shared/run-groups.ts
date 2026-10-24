@@ -2,7 +2,7 @@
 
 import type { RunServiceRow } from "@shared/run";
 
-export type RunGroupId = "open-source" | "saas" | "creator" | "personal" | "someday" | "other";
+export type RunGroupId = "open-source" | "saas" | "creator" | "someday" | "other";
 
 export interface RunGroup {
   id: RunGroupId;
@@ -13,17 +13,17 @@ export interface RunGroup {
 
 /** 頁籤順序即陣列順序；每組的 folders 順序就是該頁籤內專案的顯示順序。改分組與排序只需要改這裡。 */
 export const RUN_GROUPS: readonly RunGroup[] = [
-  { id: "open-source", label: "開源Free", folders: ["Usage-Pulse"] },
+  { id: "open-source", label: "Free", folders: ["Usage-Pulse", "GitNRun", "socialHub"] },
   { id: "saas", label: "SAAS", folders: ["stockPaw", "toBloom", "xiaochenStudio"] },
   { id: "creator", label: "創作者宇宙", folders: ["fictionPurr", "translationService", "MahoPurr-Catalyst"] },
-  { id: "personal", label: "自己用", folders: ["GitNRun", "socialHub"] },
   { id: "someday", label: "遊戲需要美術", folders: ["yumeAegis"] }
 ];
 
 /** 對不到任何一組的專案；只在真的有這種專案時才會出現成頁籤。 */
 export const RUN_OTHER_GROUP: RunGroup = { id: "other", label: "其他", folders: [] };
 
-export const DEFAULT_RUN_GROUP_ID: RunGroupId = "open-source";
+/** 開啟 app 時先停在哪個頁籤：目前的開發主力在 SAAS。 */
+export const DEFAULT_RUN_GROUP_ID: RunGroupId = "saas";
 
 const GROUP_OF_FOLDER_NAME: ReadonlyMap<string, RunGroupId> = new Map(
   RUN_GROUPS.flatMap((group) => group.folders.map((name): [string, RunGroupId] => [name.toLowerCase(), group.id]))
@@ -80,7 +80,7 @@ export const orderRunServiceRows = <T extends { name: string }>(folder: string, 
     return [...rows];
   }
   const position = positionIn(names);
-  const keyOf = (row: RunServiceRow<T>): string => (row.kind === "mobile" ? row.title : row.service.name);
+  const keyOf = (row: RunServiceRow<T>): string => (row.kind === "service" ? row.service.name : row.title);
   return [...rows].sort((a, b) => position(keyOf(a)) - position(keyOf(b)));
 };
 

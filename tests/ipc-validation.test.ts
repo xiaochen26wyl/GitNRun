@@ -117,7 +117,9 @@ describe("run page arguments", () => {
   });
 
   it("accepts only a target id plus a known action object", () => {
-    assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "stop" }]), ["p:3", { scope: "project", action: "stop" }]);
+    for (const action of ["release-backend", "release-all", "start-backend"] as const) {
+      assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action }]), ["p:3", { scope: "project", action }]);
+    }
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "project", action: "readme" }]), ["p:3", { scope: "project", action: "readme" }]);
     assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "api", action: "release" }]), ["p:3", { scope: "service", service: "api", action: "release" }]);
     assert.equal(asRunActionArgs(["p:3", { scope: "project", action: "release" }]), null);
@@ -126,10 +128,10 @@ describe("run page arguments", () => {
       "f:12",
       { scope: "service", service: "web", action: "web" }
     ]);
-    assert.deepEqual(asRunActionArgs(["p:3", { scope: "service", service: "flutter-web", action: "restart" }]), [
-      "p:3",
-      { scope: "service", service: "flutter-web", action: "restart" }
-    ]);
+    for (const [scope, action] of [["project", "stop"], ["project", "stop-backend"], ["service", "stop"], ["service", "restart"]] as const) {
+      const raw = scope === "project" ? { scope, action } : { scope, service: "flutter-web", action };
+      assert.equal(asRunActionArgs(["p:3", raw]), null, `${scope}:${action}`);
+    }
   });
 
   it("rejects extra, missing, mistyped or unknown arguments", () => {

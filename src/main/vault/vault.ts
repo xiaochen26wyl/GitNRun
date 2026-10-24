@@ -10,7 +10,7 @@ import type { Db } from "@main/db/database";
 /**
  * 密鑰保險庫：全 app 唯一能存取密鑰的出入口，只存在於主程序。
  *
- * - 密文存 api_keys 表；加密由注入的 SecretCipher 負責（正式環境是 Electron safeStorage，
+ * - 密文存 api_keys 表；加密由注入的 SecretCipher 負責（正式環境是 Keychain 金鑰的 AES-GCM，
  *   金鑰由 macOS Keychain 持有）。
  * - 加密不可用時一律拒絕儲存，絕不退回明文。
  * - 沒有任何方法會把明文或密文交給呼叫端保存：讀取只能透過 useSecret，

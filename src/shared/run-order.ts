@@ -1,7 +1,7 @@
 /** 專案啟動頁的手動排序：你在畫面上調整後固定下來的順序，疊在 run-groups.ts 的預設順序之上（純函式，不依賴 DOM／Node）。 */
 
 import { findGitLiteProject, isIssueSkippedFolder, type IssueFeed } from "@shared/git-lite";
-import { displayServiceName, groupRunServices, type RunServiceRow, type RunTargetView } from "@shared/run";
+import { displayServiceName, groupRunServices, type RunRole, type RunServiceRow, type RunTargetView } from "@shared/run";
 import { folderNameOf, orderRunServiceRows, targetsOfRunGroup, type RunGroupId } from "@shared/run-groups";
 
 export interface RunOrder {
@@ -91,8 +91,8 @@ export const moveItem = <T>(items: readonly T[], index: number, delta: -1 | 1): 
   return next;
 };
 
-/** 服務列在順序表裡的名稱：手機合併列用 App 標題，一般服務用服務名稱。 */
-export const serviceRowName = <T extends { name: string }>(row: RunServiceRow<T>): string => (row.kind === "mobile" ? row.title : row.service.name);
+/** 服務列在順序表裡的名稱：手機合併列用 App 標題，後端群組列用固定標題，一般服務用服務名稱。 */
+export const serviceRowName = <T extends { name: string; role?: RunRole }>(row: RunServiceRow<T>): string => (row.kind === "service" ? row.service.name : row.title);
 
 /** 頁籤內的專案：先套 run-groups.ts 的預設順序，再套已存的順序。 */
 export const orderedRunTargets = <T extends { folder: string }>(targets: readonly T[], groupId: RunGroupId, order: RunOrder): T[] =>

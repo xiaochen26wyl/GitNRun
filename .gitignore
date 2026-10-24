@@ -39,3 +39,8 @@ CLAUDE.local.md
 
 # Local dev state (ports hint file written next to projects)
 .dev/
+
+# Tauri build output
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/

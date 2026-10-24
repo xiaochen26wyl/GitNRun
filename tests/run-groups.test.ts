@@ -16,15 +16,15 @@ const ROOT = "/Users/zorawl/Documents/GitHub";
 describe("run groups", () => {
   it("places each of the ten project folders in its assigned group", () => {
     const expected: Array<[string, string]> = [
-      ["Usage-Pulse", "開源Free"],
+      ["Usage-Pulse", "Free"],
       ["stockPaw", "SAAS"],
       ["toBloom", "SAAS"],
       ["xiaochenStudio", "SAAS"],
       ["MahoPurr-Catalyst", "創作者宇宙"],
       ["fictionPurr", "創作者宇宙"],
       ["translationService", "創作者宇宙"],
-      ["GitNRun", "自己用"],
-      ["socialHub", "自己用"],
+      ["GitNRun", "Free"],
+      ["socialHub", "Free"],
       ["yumeAegis", "遊戲需要美術"]
     ];
     for (const [name, label] of expected) {
@@ -43,9 +43,9 @@ describe("run groups", () => {
     assert.equal(folderNameOf("/a/b/toBloom//"), "toBloom");
     assert.equal(folderNameOf(""), "");
     assert.equal(folderNameOf("/"), "");
-    assert.equal(runGroupIdOf("/somewhere/else/GitNRun/"), "personal");
+    assert.equal(runGroupIdOf("/somewhere/else/GitNRun/"), "open-source");
     // 只看最後一段：父層名稱剛好是別組的專案，不影響歸類。
-    assert.equal(runGroupIdOf(`${ROOT}/stockPaw/GitNRun`), "personal");
+    assert.equal(runGroupIdOf(`${ROOT}/stockPaw/GitNRun`), "open-source");
     assert.equal(runGroupIdOf(`${ROOT}/GitNRun/docs`), "other");
   });
 
@@ -68,7 +68,7 @@ describe("run groups", () => {
       { id: "f:1", folder: "/work/mystery" },
       { id: "p:3", folder: `${ROOT}/socialHub` }
     ];
-    assert.deepEqual(targetsOfRunGroup(targets, "personal").map((target) => target.id), ["p:1", "p:3"]);
+    assert.deepEqual(targetsOfRunGroup(targets, "open-source").map((target) => target.id), ["p:1", "p:3"]);
     assert.deepEqual(targetsOfRunGroup(targets, "saas").map((target) => target.id), ["p:2"]);
     assert.deepEqual(targetsOfRunGroup(targets, "someday"), []);
     assert.deepEqual(targetsOfRunGroup(targets, "other").map((target) => target.id), ["f:1"]);
@@ -98,7 +98,7 @@ describe("run groups", () => {
 
 describe("run service order", () => {
   const rowsOf = (...names: string[]) => groupRunServices(names.map((name) => ({ name })));
-  const keysOf = (rows: ReturnType<typeof rowsOf>) => rows.map((row) => (row.kind === "mobile" ? `mobile:${row.title}` : row.service.name));
+  const keysOf = (rows: ReturnType<typeof rowsOf>) => rows.map((row) => (row.kind === "service" ? row.service.name : `${row.kind}:${row.title}`));
   const FICTION_DECLARED = [
     "api",
     "web-fictionpurr",

@@ -21,7 +21,7 @@
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
 | 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依分組表分頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要換成自己的專案分組得改該檔；專案與 App 順序可在畫面手動調整（只存本機檢視偏好）；每個專案卡顯示 GitHub Issue 區塊 |
-| Claude 指令頁籤 | 主頁籤「Claude」（在「設定」之前）列出常用指令，每條附「複製」按鈕，免手打 | 分三組：終端機指令（`claude --model sonnet`、`clear`）、Claude 內指令（`/model sonnet`、`/model haiku`）、文字觸發語（推送、開工、完工）；複製走既有 `copyText` IPC，按鈕文字短暫顯示「已複製」或「複製失敗」 | 指令清單寫死在 `src/renderer/ClaudeView.tsx`，要增減指令得改該檔；內容非密鑰，不做剪貼簿自動清除；renderer 不直接用瀏覽器剪貼簿 API（Electron 內會被擋） |
+| Claude 指令頁籤 | 主頁籤「Claude」（在「設定」之前）列出常用指令，每條附「複製」按鈕，免手打 | 分三組：終端機指令（`claude --model sonnet`、`clear`）、Claude 內指令（`/model sonnet`、`/model haiku`）、文字觸發語（推送、開工、完工）；複製走既有 `copyText` IPC，按鈕文字短暫顯示「已複製」或「複製失敗」 | 指令清單寫死在 `src/renderer/ClaudeView.tsx`，要增減指令得改該檔；內容非密鑰，不做剪貼簿自動清除；renderer 不直接用瀏覽器剪貼簿 API（走外殼的剪貼簿能力） |
 | 釋放終端機 port | 一鍵結束在終端機手動開的 port | 設定頁「連接埠掃描」先列出將結束的程序，確認後才結束 | 只處理本人擁有、有控制終端機、且不是 GitNRun 自身上下層的監聽程序；無終端機的背景服務（資料庫、Docker、系統程序）一律不碰 |
 | Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（GitNRun 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
@@ -29,14 +29,14 @@
 
 ## 技術規格
 
-- 技術棧：Electron 43、electron-vite 3、React 18、TypeScript strict、pnpm 9、Node/Electron 內建 `node:sqlite`。
-- 打包：`electron-builder`，目前支援 macOS DMG 與 Linux AppImage/deb；產物在 `release/`。
-- `src/main` 是唯一能碰 Node、網路、金鑰、本機檔案與系統能力的層，包含監視器、規則引擎、執行器、AI、保險庫、啟動器、Webhook、通知與資料存取。
-- `src/preload` 只透過 `contextBridge` 暴露 `src/shared/ipc.ts` 宣告的 API，不放任意 Node 能力到 renderer。
-- `src/renderer` 是 React UI，不能 import Electron、Node、main、vault 或任何只屬於主程序的模組。
+- 技術棧：Tauri 2（Rust 外殼）、Node sidecar 核心、Vite、React 18、TypeScript strict、pnpm 9、Node 內建 `node:sqlite`。
+- 打包：`tauri build`，目前僅 macOS（arm64 DMG）；產物在 `src-tauri/target/release/bundle/dmg/`。
+- `src/main`（核心）是唯一能碰 Node、網路、金鑰、本機檔案與系統能力的層，包含監視器、規則引擎、執行器、AI、保險庫、啟動器、Webhook、通知與資料存取。
+- `src/renderer/ipc/` 以 Tauri 單一指令 `ipc_invoke` 轉送 `src/shared/ipc.ts` 宣告的通道，capabilities 只授權該指令與事件監聽，不放任意 Node 能力到 renderer。
+- `src/renderer` 是 React UI，不能 import Electron、Tauri（`src/renderer/ipc/` 除外）、Node、main、vault 或任何只屬於主程序的模組。
 - `src/shared` 放共用型別、IPC 通道、驗證、格式化、範本、glob 等純函式。
 - IPC 入參必須先 fail-closed 驗證；發送端必須是本 App 自己的頁面。
-- 視窗一律使用 `contextIsolation` 與 `sandbox`；CSP 禁止 renderer 直接對外連線，所有網路請求都在主程序發生。
+- 外殼只授權 `ipc_invoke` 與事件監聽，導航白名單限本 App 頁面；CSP 禁止 renderer 直接對外連線，所有網路請求都在主程序發生。
 - 層級邊界由 `scripts/check-boundary.ts` 強制檢查。
 
 ## 安全與隱私規格
@@ -45,7 +45,7 @@
 - 主要資料庫：`data/gitnrun.db`，資料夾權限應為 0700，資料庫權限應為 0600。
 - 設定備份：`data/backups/`，每天本地時間 22:00 自動備份一次（錯過則下次啟動補做），也可手動「立即備份」；保留最近 10 份；備份不包含金鑰與 dev 通關帳密。
 - 金鑰包含 GitHub token、Anthropic/OpenAI key、Slack Webhook URL、Webhook 簽章 secret、規則敏感環境變數與 dev 密碼。
-- 金鑰由 Electron `safeStorage` 加密，密文存在 SQLite；系統無法加密時一律拒絕儲存，不退回明文。
+- 金鑰以 AES-256-GCM（`gnr2:`）加密，主金鑰存在 macOS Keychain，密文存在 SQLite；系統無法加密時一律拒絕儲存，不退回明文。
 - UI 只顯示「已設定」與末四碼；存入後不提供讀回明文。
 - 明文只在主程序使用當下短暫解密，用完即丟；不得放入 argv、日誌或備份。
 - 日誌、指令輸出與 AI 請求記錄寫入前必須遮蔽已知密鑰值與常見 token 格式。
@@ -70,9 +70,9 @@
 ### 設計原則
 
 - **狀態先於動作**：按鈕可不可按由資料層統一算出（`src/shared/run.ts` 的 `runButtonStates`、`runServiceButtonStates`、`reinstallButtonState`），畫面只負責顯示。不可按時按鈕反灰，並用 `title` 說明原因（例如「尚未啟動」「找不到 iTerm2」），不讓使用者按了才報錯。
-- **只在有意義時出現**：「結束」只在真的有東西可結束時才顯示；專案層級的「結束全部」每個專案固定顯示，沒有東西可結束時反灰；反灰是「現在不行但可能行」，不顯示是「這裡不會有這個動作」。
-- **同一時間只做一件事**：任一動作進行中，其他動作按鈕一律禁用，避免重複觸發；批次動作（例如結束全部手機服務）前一步失敗仍繼續，最後合併成一則結果訊息。
-- **相關動作合併成一列**：同一個 App 的 iOS、Android 手機服務合併成一列，啟動各自獨立，結束共用一顆，依哪個平台在跑切換文字與對象。
+- **只在有意義時出現**：手機列的「釋放 port」只在真的有東西可釋放時才顯示；專案層級的「釋放全部 port」每個專案固定顯示，沒有東西可釋放時反灰；反灰是「現在不行但可能行」，不顯示是「這裡不會有這個動作」。
+- **同一時間只做一件事**：任一動作進行中，其他動作按鈕一律禁用，避免重複觸發；批次動作（例如釋放該 App 底下所有手機服務）前一步失敗仍繼續，最後合併成一則結果訊息。
+- **相關動作合併成一列**：同一個 App 的 iOS、Android 手機服務合併成一列，啟動各自獨立，釋放 port 共用一顆，一次釋放底下所有可釋放的裝置。
 - **複製類動作即時回饋**：「指令」「複製路徑」「Debug 密碼」點下就複製，用按鈕文字短暫變成「已複製」或「複製失敗」回饋；指令另外展開浮層讓人看到複製了什麼；密碼明文不顯示在畫面上。
 - **風險動作先確認**：連接埠掃描先列出將結束的程序再確認；啟動描述檔第一次執行或內容變更後，用原生對話框列出所有指令，預設按鈕是「拒絕」。
 - **主次分明**：主要動作用實心按鈕（品牌綠），次要或可略過的動作用 `ghost` 樣式；二選一切換以實心表示目前模式。
@@ -85,12 +85,13 @@
 | 按鈕 | 出現條件 | 可按條件 | 點擊行為 |
 |------|----------|----------|----------|
 | 啟動／開桌面 | 每個服務一顆；desktop 角色顯示「開桌面」，手機服務顯示「啟動 iOS」「啟動 Android」 | 找得到 iTerm2，且服務尚未執行 | 在 iTerm2 開新分頁啟動，動態 port 於此刻配置 |
-| 重新啟動 | 每個服務一顆 | 找得到 iTerm2，且服務已啟動 | 只結束被點選的服務並等 port 釋放，再用同一組 port 重開；它依賴的後端維持原狀（在跑就沿用、沒在跑才補啟動）；任一步失敗就不開新分頁 |
-| 結束 | 僅在該服務有可結束的 port 或啟動記錄時顯示 | 同左 | 依記錄的 port 結束監聽程序並關閉該分頁；手機列依在跑的平台決定對象 |
+| 釋放 port | 每個服務一顆；手機列與後端群組列各共用一顆 | 該服務有可釋放的 port、殘留程序或啟動記錄 | 結束占用 port 的程序與殘留程序、關閉終端機分頁並清掉執行狀態；有程序要結束時先用原生對話框確認；手機服務一併關閉綁定的模擬器 |
 | 開網頁 | 僅 frontend 角色 | 前端已在執行 | 開啟實際 `http://localhost:<port>`，不自動啟動服務 |
 | 指令 | 每個服務一顆（手機為「iOS 指令」「Android 指令」） | 永遠可按 | 複製顯示用指令並展開浮層 |
 | README | 專案名稱旁 | 專案根目錄有 `README.md` | 用 Cursor 開啟，找不到時反灰 |
-| 結束全部 | 專案層級，每個專案固定顯示 | 該專案有任何可結束的服務 | 結束該專案所有服務並清掉執行狀態與 `.dev/ports.json` |
+| 啟動全部後端 | 同專案有兩個以上後端時，後端合併成一列 | 找得到 iTerm2，且還有後端尚未執行 | 同專案排隊，一次開出所有尚未執行的後端分頁（沒有 port 的 worker、排程以啟動記錄判斷，不重複開） |
+| 釋放全部後端 port | 後端群組列 | 任一後端可釋放 | 一次釋放所有後端，整批只確認一次 |
+| 釋放全部 port | 專案層級，每個專案固定顯示 | 該專案任一服務可釋放 | 釋放該專案所有服務，整批只確認一次，並清掉執行狀態與 `.dev/ports.json` |
 | 重裝依賴 | 專案層級 | 有 `package.json`、沒有服務在執行、找得到 iTerm2 | 刪除 `node_modules` 後以偵測到的套件管理員重裝 |
 | 複製路徑 | 專案層級 | 永遠可按 | 複製專案資料夾路徑，結果以按鈕文字短暫提示 |
 | Debug 密碼 | 專案層級 | 已綁定來源且環境檔讀得到該鍵 | 重新讀取環境檔並複製密碼；來源可在展開面板綁定、重選或解除 |
@@ -137,13 +138,12 @@
 ```
 
 - `role` 支援 `backend`、`frontend`、`desktop`。
-- 後端與前端服務必須 `port: true`。
+- 前端服務必須 `port: true`；後端可設 `port: false`（不監聽 port 的 worker、排程），以啟動後的工作階段判斷執行狀態，仍隨「啟動前後端」一起啟動。
 - 可選 `fixedPort: 1024～65535`；只能用於 `port: true`，同一描述檔不可重複。未指定者維持動態配置；固定 port 已被占用時拒絕啟動，不改用其他號碼，也不結束占用它的程序。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.gitnrun/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；結束或重新啟動時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令不是由此推測產生、找不到 UDID 時才退回關閉全部。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是作者自己的開發用 AVD，使用者必須換成自己的，且結束時仍會關掉所有 Android 模擬器；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」，重新啟動與結束只在該平台已啟動時才出現。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.gitnrun/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；釋放 port 時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令不是由此推測產生、找不到 UDID 時才退回關閉全部。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是作者自己的開發用 AVD，使用者必須換成自己的，且結束時仍會關掉所有 Android 模擬器；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」與共用的「釋放 port」，釋放時一併關閉綁定的模擬器。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
 - frontend、desktop 服務隱含依賴同專案所有 backend，不必手寫 `needs`；啟動任一前端會連帶啟動後端，後端已在跑則沿用。同專案的啟動動作排隊執行，同時啟動多個前端時後端只啟動一次。
-- 「重新啟動」只結束被點選的服務，不動它依賴的後端（結束 port 上的程序、關閉舊的終端機分頁，手機服務連同該平台的模擬器一起關），並等舊程序釋放 port，再用同一組 port 重新開啟；任一步結束失敗或 port 仍被占用就不開新分頁。
 - 專案與 App 的手動排序：存在 renderer 的 localStorage（`gitnrun.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`gitnrun.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。
 - Issue 區塊：每個專案卡顯示該 repo 的 GitHub issues，預設只列前 5 筆（`ISSUE_PREVIEW_COUNT`），可展開；頁面可見時每 60 秒更新一次。哪些分組略過 Issue 區塊由 `src/shared/git-lite.ts` 的略過分組表決定（以分組 id 指定，跟著分組表走）。使用者可關閉 Issue 顯示（`gitnrun.run.showIssues`），關閉時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。沒有 GitHub remote、載入中、失敗（可重試）各有對應狀態。
 - Debug 密碼來源：專案設定可綁定專案環境檔裡的某個鍵，由 `src/main/run/passcode-source.ts` 讀取；只讀不寫、不保存，明文只在主程序經手，環境檔大小有上限（`MAX_PASSCODE_ENV_BYTES`）。
@@ -191,7 +191,6 @@ pnpm check:boundary
 pnpm test:unit
 pnpm build && pnpm smoke:build
 pnpm dist:mac
-pnpm dist:linux
 ```
 
 文件變更通常不需要跑 build 或 unit test；若文件描述的功能行為被同步修改，需依影響範圍補跑對應檢查。

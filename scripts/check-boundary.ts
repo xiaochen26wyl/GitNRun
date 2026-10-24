@@ -6,8 +6,7 @@ const ROOT = process.cwd();
 
 const LAYERS: ReadonlyArray<{ layer: Layer; dir: string }> = [
   { layer: "renderer", dir: "src/renderer" },
-  { layer: "shared", dir: "src/shared" },
-  { layer: "preload", dir: "src/preload" }
+  { layer: "shared", dir: "src/shared" }
 ];
 
 const SOURCE_EXTENSIONS = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;

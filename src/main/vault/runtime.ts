@@ -3,7 +3,7 @@ import { createVault, type SecretCipher, type Vault } from "@main/vault/vault";
 
 let vault: Vault | null = null;
 
-/** 加密方式由外殼決定（Electron 的 safeStorage、Tauri 的 Keychain 金鑰）；必須在外殼準備好之後呼叫。 */
+/** 加密方式由外殼決定（Keychain 金鑰的 AES-GCM）；必須在外殼準備好之後呼叫。 */
 export const initVault = (db: Db, cipher: SecretCipher): Vault => {
   vault = createVault(db, cipher);
   return vault;

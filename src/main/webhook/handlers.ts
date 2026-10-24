@@ -8,7 +8,7 @@ import { UserFacingError } from "@main/errors";
 import { VaultUnavailableError, type Vault } from "@main/vault/vault";
 import { WEBHOOK_SETTINGS_KEY, readWebhookSettings, webhookSecretName, type WebhookReceiver } from "@main/webhook/receiver";
 
-/** Webhook 的設定與 secret 管理（與 Electron 無關，可直接測試）。 */
+/** Webhook 的設定與 secret 管理（與外殼無關，可直接測試）。 */
 
 export interface WebhookAdminDeps {
   db: Db;

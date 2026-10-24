@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+  </array>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>GitNRun</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>gitnrun</string>
+      </array>
+    </dict>
+  </array>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>GitNRun 需要控制 iTerm2 與 iOS 模擬器，才能替你開啟終端機並啟動專案。</string>
+</dict>
+</plist>

@@ -17,7 +17,7 @@ import { UserFacingError } from "@main/errors";
 import type { RuleEngine } from "@main/rules/engine";
 import type { Vault } from "@main/vault/vault";
 
-/** 規則管理的處理邏輯（與 Electron 無關，可直接單元測試）。 */
+/** 規則管理的處理邏輯（與外殼無關，可直接單元測試）。 */
 
 export const RULES_FILE_FORMAT = "gitnrun-rules";
 export const RULES_FILE_VERSION = 1;

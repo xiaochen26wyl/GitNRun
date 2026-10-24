@@ -19,8 +19,8 @@ import type { ProjectWebhookInfo, WebhookSettings, WebhookStatus } from "@shared
 import type { StartWorkInput, StartWorkPreview, StartWorkResult } from "@shared/start-work";
 
 /**
- * IPC 通道與渲染層可呼叫的 API 型別，是主程序、preload、渲染層共用的唯一來源。
- * 新增功能的順序：在這裡宣告通道與型別 → 主程序 handle（含入參驗證）→ preload 實作 →
+ * IPC 通道與渲染層可呼叫的 API 型別，是核心、外殼、渲染層共用的唯一來源。
+ * 新增功能的順序：在這裡宣告通道與型別 → 主程序 handle（含入參驗證）→ renderer/ipc 的方法表 →
  * 渲染層只透過 window.gitNRun 呼叫。型別只在這裡寫一次，不再手動複製到 d.ts。
  */
 
@@ -128,7 +128,7 @@ export interface AppInfo {
 /** 可更新的專案欄位；owner／repo 不可變更，要換 repo 請刪除後重新新增。 */
 export type ProjectPatch = Partial<Omit<ProjectInput, "owner" | "repo">>;
 
-/** 拖曳進來的檔案；只需要名稱，路徑由 preload 向 Electron 取得。 */
+/** 拖曳進來的檔案；只需要名稱，路徑由外殼取得。 */
 export interface DroppedFile {
   readonly name: string;
 }
@@ -229,7 +229,7 @@ export interface GitNRunApi {
   getGitLiteOverview(options?: GitLiteOverviewOptions): Promise<GitLiteOverview>;
   /** 各專案 README「品牌配色 → 主要配色」的主色：資料夾（已正規化）→ 大寫 #RRGGBB，沒有品牌色的資料夾不會出現。 */
   getBrandColors(): Promise<BrandColorMap>;
-  /** 拖曳進視窗的檔案／資料夾的本機路徑（Electron 不再提供 File.path，要透過 preload 取得）。 */
+  /** 拖曳進視窗的檔案／資料夾的本機路徑（瀏覽器拿不到 File.path，由外殼提供）。 */
   pathForFile(file: DroppedFile): string;
 
   getAiSettings(): Promise<AiSettings>;

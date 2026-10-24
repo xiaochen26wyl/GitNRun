@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主視窗只能呼叫 ipc_invoke 並監聽事件；不授權任何 fs、shell、dialog。",
+  "windows": ["main"],
+  "permissions": ["allow-ipc-invoke", "core:event:allow-listen", "core:event:allow-unlisten"]
+}

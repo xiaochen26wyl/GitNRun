@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  BACKEND_GROUP_TITLE,
   buildCommandLine,
   countFreshPorts,
   describeCommand,
@@ -13,13 +14,16 @@ import {
   isRunTargetId,
   mobilePlatformOf,
   parseRunTargetId,
-  planMobileStop,
+  mobileDeviceLabel,
   planStart,
   runButtonStates,
   selectServices,
+  backendGroupButtons,
+  summarizeBackendState,
   shellQuote,
   summarizeMobileState,
   validateManifest,
+  type RunRole,
   type RunManifest
 } from "@shared/run";
 import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, iosDeviceIdOf, iosRunScript, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
@@ -73,7 +77,7 @@ describe("validateManifest", () => {
     assert.ok(expectErrors({ version: 1, services: [service()], extra: 1 }).some((error) => error.includes("最上層")));
     expectErrors({ version: 1, services: [] });
     expectErrors({ version: 1 });
-    expectErrors({ version: 1, services: Array.from({ length: 13 }, (_, i) => service({ name: `s${i}` })) });
+    expectErrors({ version: 1, services: Array.from({ length: 21 }, (_, i) => service({ name: `s${i}` })) });
   });
 
   it("rejects bad names, roles, commands and unknown service keys", () => {
@@ -89,8 +93,8 @@ describe("validateManifest", () => {
     expectErrors(manifestOf(service({ shell: true })));
   });
 
-  it("requires a port for backend and frontend services", () => {
-    expectErrors(manifestOf(service({ port: false })));
+  it("requires a port for frontend services but not for backend workers", () => {
+    parsed(manifestOf(service({ port: false })));
     expectErrors(manifestOf(service({ role: "frontend", port: undefined })));
     parsed(manifestOf(service({ role: "desktop", port: false })));
   });
@@ -303,7 +307,7 @@ describe("runButtonStates", () => {
 
   it("disables everything with a reason when there is no usable manifest", () => {
     const missing = runButtonStates({ manifest: "missing", services: [], iterm: true });
-    assert.deepEqual([missing.all.enabled, missing.restart.enabled, missing.stop.enabled, missing.web.enabled, missing.desktop.enabled], [false, false, false, false, false]);
+    assert.deepEqual([missing.all.enabled, missing.web.enabled, missing.desktop.enabled], [false, false, false]);
     assert.equal(missing.all.reason, "找不到可啟動服務");
     assert.match(runButtonStates({ manifest: "invalid", services: [], iterm: true }).web.reason ?? "", /有誤/);
   });
@@ -311,7 +315,6 @@ describe("runButtonStates", () => {
   it("explains why a button is unavailable", () => {
     const noDesktop = runButtonStates({ manifest: "ok", services: [{ ...api, state: "stopped" }, { ...web, state: "stopped" }], iterm: true });
     assert.equal(noDesktop.all.enabled, true);
-    assert.equal(noDesktop.stop.reason, "尚未啟動");
     assert.equal(noDesktop.web.reason, "前端尚未啟動（先按一鍵前後端）");
     assert.equal(noDesktop.desktop.reason, "沒有桌面版");
 
@@ -324,8 +327,6 @@ describe("runButtonStates", () => {
   it("needs iTerm2 for the launching buttons but not for opening the web page", () => {
     const states = runButtonStates({ manifest: "ok", services: [{ ...api, state: "running" }, { ...web, state: "running" }, { ...panel, state: "stopped" }], iterm: false });
     assert.equal(states.all.reason, "找不到 iTerm2");
-    assert.equal(states.restart.reason, "找不到 iTerm2");
-    assert.equal(states.stop.enabled, true);
     assert.equal(states.desktop.reason, "找不到 iTerm2");
     assert.equal(states.web.enabled, true);
   });
@@ -333,8 +334,6 @@ describe("runButtonStates", () => {
   it("disables buttons for things that are already running", () => {
     const states = runButtonStates({ manifest: "ok", services: [{ ...api, state: "running" }, { ...web, state: "starting" }, { ...panel, state: "running" }], iterm: true });
     assert.equal(states.all.reason, "已在執行中");
-    assert.equal(states.restart.enabled, true);
-    assert.equal(states.stop.enabled, true);
     assert.equal(states.desktop.reason, "桌面版已在執行中");
     assert.equal(states.web.enabled, false);
   });
@@ -539,7 +538,9 @@ describe("run store", () => {
 
 describe("mobile services share one row", () => {
   const names = (rows: ReturnType<typeof groupRunServices<{ name: string }>>) =>
-    rows.map((row) => (row.kind === "service" ? row.service.name : `mobile:${row.services.map((item) => item.service.name).join("+")}`));
+    rows.map((row) =>
+      row.kind === "service" ? row.service.name : row.kind === "backend" ? `backend:${row.services.map((item) => item.name).join("+")}` : `mobile:${row.services.map((item) => item.service.name).join("+")}`
+    );
   const titles = (rows: ReturnType<typeof groupRunServices<{ name: string }>>) => rows.flatMap((row) => (row.kind === "mobile" ? [row.title] : []));
   const of = (...list: string[]) => list.map((name) => ({ name }));
 
@@ -600,11 +601,16 @@ describe("mobile services share one row", () => {
     assert.deepEqual(titles(rows), ["mobile-mahopurr"]);
   });
 
-  it("shows one shared end button whose text and targets follow which platform can be ended", () => {
-    assert.deepEqual(planMobileStop({ ios: true, android: false }), { label: "結束 iOS", platforms: ["ios"] });
-    assert.deepEqual(planMobileStop({ ios: false, android: true }), { label: "結束 Android", platforms: ["android"] });
-    assert.deepEqual(planMobileStop({ ios: true, android: true }), { label: "結束全部", platforms: ["ios", "android"] });
-    assert.equal(planMobileStop({ ios: false, android: false }), null);
+  it("puts ios and ios2 of one app in a single row, iOS first and Android last", () => {
+    const rows = groupRunServices(of("mobile-poppurr-android", "mobile-poppurr-ios2", "mobile-poppurr-ios"));
+    assert.deepEqual(names(rows), ["mobile:mobile-poppurr-ios+mobile-poppurr-ios2+mobile-poppurr-android"]);
+    assert.deepEqual(titles(rows), ["mobile-poppurr"]);
+    assert.equal(mobileDeviceLabel("ios", "2"), "iOS 2");
+    assert.equal(mobileDeviceLabel("ios", ""), "iOS");
+  });
+
+  it("still splits a second service with the same platform and the same suffix into a normal row", () => {
+    assert.deepEqual(names(groupRunServices(of("flutter-ios2", "ios2-flutter"))), ["mobile:flutter-ios2", "ios2-flutter"]);
   });
 
   it("uses a fixed shutdown command per platform", () => {
@@ -665,5 +671,60 @@ describe("run service display", () => {
       ]),
       { state: "running", text: "iOS 執行中、Android 啟動中" }
     );
+  });
+});
+
+describe("backend services share one row", () => {
+  const of = (...list: Array<[string, RunRole]>) => list.map(([name, role]) => ({ name, role }));
+  const shape = (rows: ReturnType<typeof groupRunServices<{ name: string; role: RunRole }>>) =>
+    rows.map((row) => (row.kind === "service" ? row.service.name : row.kind === "backend" ? `backend:${row.services.map((item) => item.name).join("+")}` : `mobile:${row.title}`));
+
+  it("merges two or more backends into one row at the first backend position", () => {
+    const rows = groupRunServices(of(["api", "backend"], ["api-worker", "backend"], ["api-beat", "backend"], ["edge", "backend"], ["web", "frontend"]));
+    assert.deepEqual(shape(rows), ["backend:api+api-worker+api-beat+edge", "web"]);
+    assert.equal(rows[0]?.kind === "backend" ? rows[0].title : "", BACKEND_GROUP_TITLE);
+    assert.deepEqual(shape(groupRunServices(of(["web", "frontend"], ["api", "backend"], ["worker", "backend"]))), ["web", "backend:api+worker"]);
+  });
+
+  it("keeps a single backend as a normal row", () => {
+    assert.deepEqual(shape(groupRunServices(of(["api", "backend"], ["web", "frontend"]))), ["api", "web"]);
+  });
+
+  it("leaves mobile services and non-backend roles alone", () => {
+    const rows = groupRunServices(of(["api", "backend"], ["commerce", "backend"], ["flutter-ios", "desktop"], ["flutter-android", "desktop"], ["web", "frontend"]));
+    assert.deepEqual(shape(rows), ["backend:api+commerce", "mobile:flutter", "web"]);
+  });
+
+  it("selects only the backends for the backend selection, in dependency order", () => {
+    const result = validateManifest({
+      version: 1,
+      services: [
+        { name: "edge", role: "backend", command: ["pnpm", "edge"], port: true, needs: ["api"], env: { PORT: "{port}" } },
+        { name: "api", role: "backend", command: ["pnpm", "api"], port: true, env: { PORT: "{port}" } },
+        { name: "worker", role: "backend", command: ["pnpm", "worker"], port: false, env: {} },
+        { name: "web", role: "frontend", command: ["pnpm", "web"], port: true, env: { PORT: "{port}" } }
+      ]
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(selectServices(result.manifest, "backend").map((service) => service.name), ["api", "edge", "worker"]);
+  });
+
+  it("summarises the group state, counting services without a port by their own state", () => {
+    assert.deepEqual(summarizeBackendState([{ state: "stopped" }, { state: "stopped" }]), { state: "stopped", text: "2 個後端，未啟動" });
+    assert.deepEqual(summarizeBackendState([{ state: "running" }, { state: "starting" }, { state: "stopped" }]), { state: "running", text: "3 個後端，1 個執行中，1 個啟動中" });
+    assert.deepEqual(summarizeBackendState([{ state: "starting" }, { state: "stopped" }]), { state: "starting", text: "2 個後端，1 個啟動中" });
+  });
+
+  it("enables a group button when any member can be pressed and otherwise explains why", () => {
+    const button = (enabled: boolean, reason: string | null = null) => ({ enabled, reason: enabled ? null : reason });
+    const member = (start: boolean, release: boolean) => ({
+      buttons: { start: button(start, "已在執行中"), web: button(false, "不是網頁前端"), release: button(release, "沒有需要釋放的 port") }
+    });
+    const mixed = backendGroupButtons([member(false, true), member(true, false)]);
+    assert.deepEqual([mixed.start.enabled, mixed.release.enabled], [true, true]);
+    const allRunning = backendGroupButtons([member(false, true), member(false, true)]);
+    assert.deepEqual([allRunning.start.enabled, allRunning.start.reason], [false, "已在執行中"]);
+    const idle = backendGroupButtons([member(true, false), member(true, false)]);
+    assert.deepEqual([idle.release.enabled, idle.release.reason], [false, "沒有需要釋放的 port"]);
   });
 });

@@ -54,3 +54,31 @@ export const OPEN_SIMULATOR_WINDOW_SCRIPT = [
 
 /** osascript 因沒有「輔助使用」授權而失敗的訊息特徵。 */
 export const ACCESSIBILITY_DENIED = /-1719|-25211|不允許輔助取用|assistive access/i;
+
+/** 從 `simctl list devices booted -j` 的輸出取出已開機的 UDID（大寫）；格式不對回傳空集合。 */
+export const bootedUdids = (listJson: string): Set<string> => {
+  const booted = new Set<string>();
+  try {
+    const parsed = JSON.parse(listJson) as { devices?: Record<string, Array<{ udid?: unknown; state?: unknown }>> };
+    for (const devices of Object.values(parsed.devices ?? {})) {
+      for (const device of devices) {
+        if (device.state === "Booted" && typeof device.udid === "string") booted.add(device.udid.toUpperCase());
+      }
+    }
+  } catch {
+    return new Set();
+  }
+  return booted;
+};
+
+const FLUTTER_RUN = /(?:flutter_tools\.snapshot|\bflutter)\s+run\b/;
+
+/** `ps -axo command=` 的輸出裡，有沒有 `flutter run` 程序綁定這個 UDID（命令列不含專案路徑，只能靠 UDID 認）。 */
+export const flutterRunsOnDevice = (psOutput: string, udid: string): boolean => {
+  const target = udid.toUpperCase();
+  return psOutput.split("\n").some((line) => FLUTTER_RUN.test(line) && line.toUpperCase().includes(target));
+};
+
+/** iOS 服務是否還在執行：模擬器已開機，且有 flutter run 綁著它；只有模擬器開著不算。 */
+export const iosServiceAlive = (input: { simctlJson: string; psOutput: string; udid: string }): boolean =>
+  bootedUdids(input.simctlJson).has(input.udid.toUpperCase()) && flutterRunsOnDevice(input.psOutput, input.udid);

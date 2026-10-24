@@ -6,10 +6,13 @@ import { DebugPasswordActions } from "./DebugPasswordActions";
 import {
   MOBILE_PLATFORM_LABEL,
   RUN_STATE_LABEL,
+  backendGroupButtons,
   displayServiceName,
+  groupButtonState,
   groupRunServices,
   mobilePlatformOf,
-  planMobileStop,
+  mobileDeviceLabel,
+  summarizeBackendState,
   summarizeMobileState,
   type MobilePlatform,
   type RunAction,
@@ -43,8 +46,6 @@ const COPY_FLASH_MS = 1_500;
 const ROLE_LABEL = { backend: "後端", frontend: "前端", desktop: "桌面" } as const;
 const STATE_LABEL = RUN_STATE_LABEL;
 const PLATFORM_LABEL = MOBILE_PLATFORM_LABEL;
-
-const ENABLED: RunButtonState = { enabled: true, reason: null };
 
 /** 標籤優先顯示偵測到的框架，辨識不出來才退回角色。 */
 const serviceBadgeLabel = (service: RunServiceView): string =>
@@ -135,6 +136,59 @@ const CommandButton = ({ command, label = "指令" }: { command: string; label?:
   );
 };
 
+/** 多台裝置的指令收進一個選單：點「指令」展開，點某台就複製它的指令；點外面或按 Esc 關閉。 */
+const CommandMenu = ({ items }: { items: ReadonlyArray<{ key: string; label: string; command: string }> }) => {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState("");
+  const ref = useRef<HTMLSpanElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const copy = (item: { key: string; command: string }): void => {
+    // 渲染層的瀏覽器剪貼簿權限被 session lockdown 一律拒絕，改走主程序的 IPC 寫入剪貼簿。
+    void window.gitNRun.copyText(item.command).then(
+      () => setCopied(item.key),
+      () => setCopied("")
+    );
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(""), COPY_FLASH_MS);
+  };
+
+  return (
+    <span className="run-command-wrap" ref={ref}>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        指令 ▾
+      </button>
+      {open ? (
+        <span className="run-command-pop run-command-menu">
+          {items.map((item) => (
+            <button type="button" key={item.key} title={item.command} onClick={() => copy(item)}>
+              {copied === item.key ? "已複製" : `複製 ${item.label} 指令`}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+};
+
 /**
  * 專案路徑不直接攤在卡片上，點一下複製即可；結果用按鈕文字短暫提示，不展開浮層。
  * missing 為真時路徑在磁碟上已找不到（上次新增／編輯時檢查的結果），但仍允許複製——
@@ -182,8 +236,6 @@ const ServiceRow = ({
   onAction: (action: RunAction) => void;
 }) => {
   const startAction: RunAction = { scope: "service", service: service.name, action: "start" };
-  const restartAction: RunAction = { scope: "service", service: service.name, action: "restart" };
-  const stopAction: RunAction = { scope: "service", service: service.name, action: "stop" };
   const webAction: RunAction = { scope: "service", service: service.name, action: "web" };
   const releaseAction: RunAction = { scope: "service", service: service.name, action: "release" };
   const busy = (action: RunAction): boolean => busyKey !== "" && busyKey !== actionKey(target, action);
@@ -205,8 +257,6 @@ const ServiceRow = ({
       </div>
       <div className="row-actions run-service-actions">
         <ActionButton label={startLabel(service)} state={service.buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
-        <ActionButton label="重新啟動" state={service.buttons.restart} busy={busy(restartAction)} onClick={() => onAction(restartAction)} />
-        {service.buttons.stop.enabled ? <ActionButton label="結束" state={service.buttons.stop} busy={busy(stopAction)} onClick={() => onAction(stopAction)} /> : null}
         {service.role === "frontend" ? <ActionButton label="開網頁" state={service.buttons.web} busy={busy(webAction)} onClick={() => onAction(webAction)} /> : null}
         <ActionButton label="釋放 port" state={service.buttons.release} busy={busy(releaseAction)} onClick={() => onAction(releaseAction)} />
         <CommandButton command={service.command} />
@@ -215,7 +265,7 @@ const ServiceRow = ({
   );
 };
 
-/** 同一個 App 的 iOS、Android 手機服務合併成一列，標題是去掉平台後的 App 名稱：啟動各平台分開，結束共用一顆，依哪個平台在跑切換文字與對象。 */
+/** 同一個 App 的 iOS、Android 手機服務合併成一列，標題是去掉平台後的 App 名稱：啟動各平台分開，釋放 port 共用一顆，一次釋放底下所有可釋放的裝置。 */
 const MobileRow = ({
   target,
   title,
@@ -225,20 +275,55 @@ const MobileRow = ({
 }: {
   target: RunTargetView;
   title: string;
-  entries: Array<{ platform: MobilePlatform; service: RunServiceView }>;
+  entries: Array<{ platform: MobilePlatform; variant: string; service: RunServiceView }>;
   busyKey: string;
   onAction: (action: RunAction | readonly RunAction[]) => void;
 }) => {
   const busy = (action: RunAction): boolean => busyKey !== "" && busyKey !== actionKey(target, action);
-  const serviceOf = (platform: MobilePlatform): RunServiceView | undefined => entries.find((entry) => entry.platform === platform)?.service;
-  const stopActionOf = (platform: MobilePlatform): RunAction => ({ scope: "service", service: serviceOf(platform)?.name ?? "", action: "stop" });
-  const stopPlan = planMobileStop({
-    ios: serviceOf("ios")?.buttons.stop.enabled === true,
-    android: serviceOf("android")?.buttons.stop.enabled === true
-  });
-  const stopActions = stopPlan?.platforms.map(stopActionOf) ?? [];
-  const summary = summarizeMobileState(entries.map(({ platform, service }) => ({ platform, state: service.state })));
+  const releaseActions: RunAction[] = entries
+    .filter(({ service }) => service.buttons.release.enabled)
+    .map(({ service }) => ({ scope: "service", service: service.name, action: "release" }));
+  const summary = summarizeMobileState(entries.map(({ platform, variant, service }) => ({ platform, variant, state: service.state })));
   const first = entries[0]?.service;
+
+  // 同一個 App 有第二台 iOS（ios2）時，每台裝置各佔一行；只有一台 iOS 與一台 Android 時維持單排。
+  if (entries.some((entry) => entry.variant !== "")) {
+    return (
+      <li className="run-service">
+        <div className="run-service-main">
+          <span className={`status-dot ${summary.state}`} title={summary.text} />
+          <span className="run-service-title platform-mobile" title={serviceHintOf(target.folder, title)}>{displayServiceName(title)}</span>
+          <span className="badge run-framework">{first === undefined ? "手機" : serviceBadgeLabel(first)}</span>
+          <span className="muted">{summary.text}</span>
+        </div>
+        <div className="row-actions run-service-actions">
+          {releaseActions[0] !== undefined ? (
+            <ActionButton label="釋放 port" state={groupButtonState(entries.map((entry) => entry.service), "release")} busy={busy(releaseActions[0])} onClick={() => onAction(releaseActions)} />
+          ) : null}
+          <CommandMenu items={entries.map(({ platform, variant, service }) => ({ key: service.name, label: mobileDeviceLabel(platform, variant), command: service.command }))} />
+        </div>
+        <div className="run-devices">
+          {entries.map(({ platform, variant, service }) => {
+            const name = mobileDeviceLabel(platform, variant);
+            const startAction: RunAction = { scope: "service", service: service.name, action: "start" };
+            return (
+              <button
+                type="button"
+                className="run-device"
+                key={service.name}
+                disabled={!service.buttons.start.enabled || busy(startAction)}
+                title={service.buttons.start.reason ?? `啟動 ${name}`}
+                onClick={() => onAction(startAction)}
+              >
+                <span className={`status-dot ${service.state}`} />
+                {name}
+              </button>
+            );
+          })}
+        </div>
+      </li>
+    );
+  }
 
   return (
     <li className="run-service">
@@ -252,21 +337,69 @@ const MobileRow = ({
         {entries.map(({ platform, service }) => {
           const name = PLATFORM_LABEL[platform];
           const startAction: RunAction = { scope: "service", service: service.name, action: "start" };
-          const restartAction: RunAction = { scope: "service", service: service.name, action: "restart" };
           return (
             <span className="run-platform" key={service.name}>
               <ActionButton label={`啟動 ${name}`} state={service.buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
-              <ActionButton label={`重新啟動 ${name}`} state={service.buttons.restart} busy={busy(restartAction)} onClick={() => onAction(restartAction)} />
             </span>
           );
         })}
-        {stopPlan !== null && stopActions[0] !== undefined ? (
-          <ActionButton label={stopPlan.label} state={ENABLED} busy={busy(stopActions[0])} onClick={() => onAction(stopActions)} />
+        {releaseActions[0] !== undefined ? (
+          <ActionButton label="釋放 port" state={groupButtonState(entries.map((entry) => entry.service), "release")} busy={busy(releaseActions[0])} onClick={() => onAction(releaseActions)} />
         ) : null}
         {entries.map(({ platform, service }) => (
           <CommandButton key={service.name} command={service.command} label={`${PLATFORM_LABEL[platform]} 指令`} />
         ))}
       </div>
+    </li>
+  );
+};
+
+/** 同專案的多個後端合併成一列：啟動、釋放 port 都是整組一次完成；組內每個後端只列名稱、狀態與 port。 */
+const BackendRow = ({
+  target,
+  title,
+  services,
+  busyKey,
+  onAction
+}: {
+  target: RunTargetView;
+  title: string;
+  services: RunServiceView[];
+  busyKey: string;
+  onAction: (action: RunAction | readonly RunAction[]) => void;
+}) => {
+  const busy = (action: RunAction): boolean => busyKey !== "" && busyKey !== actionKey(target, action);
+  const startAction: RunAction = { scope: "project", action: "start-backend" };
+  const releaseAction: RunAction = { scope: "project", action: "release-backend" };
+  const buttons = backendGroupButtons(services);
+  const summary = summarizeBackendState(services);
+
+  return (
+    <li className="run-service">
+      <div className="run-service-main">
+        <span className={`status-dot ${summary.state}`} title={summary.text} />
+        <span className="run-service-title">{title}</span>
+        <span className="badge run-framework">後端</span>
+        <span className="muted">{summary.text}</span>
+      </div>
+      <div className="row-actions run-service-actions">
+        <ActionButton label="啟動全部後端" state={buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
+        <ActionButton label="釋放全部後端 port" state={buttons.release} busy={busy(releaseAction)} onClick={() => onAction(releaseAction)} />
+      </div>
+      <ul className="plain-list run-backend-members">
+        {services.map((service) => (
+          <li key={service.name}>
+            <span className={`status-dot ${service.state}`} title={STATE_LABEL[service.state]} />
+            <span title={serviceHintOf(target.folder, service.name)}>{displayServiceName(service.name)}</span>
+            <span className="badge">{serviceBadgeLabel(service)}</span>
+            <span className="muted">{STATE_LABEL[service.state]}</span>
+            {service.url ? <span className="mono">{service.url}</span> : null}
+            {!service.url && service.fixedPort !== null ? <span className="mono muted">固定 http://localhost:{service.fixedPort}</span> : null}
+            {service.exitedEarly ? <span className="warn">啟動後立即退出</span> : null}
+            <CommandButton command={service.command} />
+          </li>
+        ))}
+      </ul>
     </li>
   );
 };
@@ -308,10 +441,10 @@ const TargetRow = ({
         <DebugAccountActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         <DebugPasswordActions target={target} onChanged={onPasswordChanged} onMessage={onPasswordMessage} />
         <ActionButton
-          label="結束全部"
-          state={target.buttons.stop}
-          busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "stop" })}
-          onClick={() => onAction({ scope: "project", action: "stop" })}
+          label="釋放全部 port"
+          state={groupButtonState(target.services, "release")}
+          busy={busyKey !== "" && busyKey !== actionKey(target, { scope: "project", action: "release-all" })}
+          onClick={() => onAction({ scope: "project", action: "release-all" })}
         />
         <ActionButton
           label="重裝依賴"
@@ -339,7 +472,9 @@ const TargetRow = ({
     {target.services.length > 0 ? (
       <ul className="plain-list run-services">
         {orderedRunServiceRows(target.folder, groupRunServices(target.services), order).map((row) =>
-          row.kind === "mobile" ? (
+          row.kind === "backend" ? (
+            <BackendRow key={row.title} target={target} title={row.title} services={row.services} busyKey={busyKey} onAction={onAction} />
+          ) : row.kind === "mobile" ? (
             <MobileRow key={row.services[0]?.service.name ?? row.title} target={target} title={row.title} entries={row.services} busyKey={busyKey} onAction={onAction} />
           ) : (
             <ServiceRow key={row.service.name} target={target} service={row.service} busyKey={busyKey} onAction={onAction} />
@@ -370,7 +505,7 @@ export const RunView = ({
   const [savedOrder, saveOrder] = useRunOrderPref();
   const [sortModes, saveSortMode] = useRunSortModePref();
   const [reordering, setReordering] = useState(false);
-  // 開源、自己用等分組不需要 issue：整個功能（區塊、摘要、開關、排序、GitHub 請求）都不啟用。
+  // Free 分組（開源與自用專案）不需要 issue：整個功能（區塊、摘要、開關、排序、GitHub 請求）都不啟用。
   const issuesAllowed = !isIssueSkippedGroup(group.id);
   const sortMode = issuesAllowed ? runSortModeOf(sortModes, group.id) : "manual";
   const [issuePref, setIssuePref] = useIssueDisplayPref();
@@ -419,7 +554,7 @@ export const RunView = ({
     setError("");
     setBusyKey(actionKey(target, first));
     try {
-      // 多個動作依序執行（例如結束全部手機服務）；前一個失敗也繼續，最後把結果合併成一則訊息。
+      // 多個動作依序執行（例如釋放該 App 底下所有手機服務）；前一個失敗也繼續，最後把結果合併成一則訊息。
       const results: Array<{ ok: boolean; message: string }> = [];
       for (const item of actions) {
         results.push(await window.gitNRun.runProjectAction(target.id, item));

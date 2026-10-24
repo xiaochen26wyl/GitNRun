@@ -2,6 +2,8 @@
   color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", sans-serif;
   font-size: 14px;
+  /* 固定行高：Chromium 與 WebKit 的 normal 行高在中文字上差 4px，按鈕與列高會跟著位移 */
+  line-height: 1.47;
   background: var(--bg);
   --bg: #ffffff;
   --border: color-mix(in srgb, currentColor 18%, transparent);
@@ -36,6 +38,12 @@ button,
 input,
 select {
   font: inherit;
+}
+
+/* 勾選框固定色：WebKit 預設跟系統強調色，固定成藍色讓外觀不隨系統變 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: #0075ff;
 }
 
 button {
@@ -642,10 +650,42 @@ select {
 .run-service-main .status-dot {
   flex: none;
 }
+.run-backend-members {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0 0 0 20px;
+}
+.run-backend-members li {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
 .run-platform {
   display: inline-flex;
   gap: 8px;
   align-items: center;
+}
+.run-devices {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-left: 20px;
+}
+.run-device {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 112px;
+  justify-content: center;
+}
+.run-command-menu {
+  display: grid;
+  gap: 6px;
 }
 .run-command-wrap {
   position: relative;

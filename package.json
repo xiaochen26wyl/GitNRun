@@ -5,8 +5,7 @@
   "description": "Local dev launcher for starting and restarting frontend/backend services.",
   "license": "Apache-2.0",
   "os": [
-    "darwin",
-    "linux"
+    "darwin"
   ],
   "homepage": "https://github.com/xiaochen26wyl/GitNRun#readme",
   "repository": {
@@ -17,79 +16,34 @@
     "url": "https://github.com/xiaochen26wyl/GitNRun/issues"
   },
   "private": true,
-  "main": "dist/main/index.js",
   "scripts": {
-    "postinstall": "node scripts/fix-electron-install.mjs",
-    "fix:electron": "node scripts/fix-electron-install.mjs",
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "preview": "electron-vite preview",
+    "dev": "tsx scripts/dev.ts",
+    "dev:tauri": "tsx scripts/dev.ts",
+    "build:sidecar": "tsx scripts/build-sidecar.ts",
+    "prepare:node": "tsx scripts/prepare-node.ts",
+    "build:tauri": "vite build && pnpm build:sidecar && pnpm prepare:node",
+    "dist:tauri": "tauri build",
+    "build": "vite build && pnpm build:sidecar",
     "test:unit": "tsx --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "check:boundary": "tsx scripts/check-boundary.ts",
-    "smoke:build": "node scripts/smoke-build.mjs",
-    "dist:mac": "pnpm build && electron-builder --mac dmg --x64 --arm64 --publish never",
-    "dist:linux": "pnpm build && electron-builder --linux AppImage deb --x64 --publish never"
+    "smoke:build": "tsx scripts/smoke-tauri.ts",
+    "smoke:tauri": "tsx scripts/smoke-tauri.ts",
+    "dist:mac": "pnpm dist:tauri"
   },
   "devDependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/cli": "^2",
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",
-    "electron": "^43.7.9",
-    "electron-builder": "^26.15.3",
-    "electron-vite": "^3.1.0",
+    "esbuild": "^0.28.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vite": "^6.4.4"
-  },
-  "build": {
-    "appId": "com.gitnrun.app",
-    "productName": "GitNRun",
-    "asar": true,
-    "npmRebuild": false,
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**",
-      "package.json"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "identity": null,
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "extendInfo": {
-        "CFBundleDocumentTypes": [
-          {
-            "CFBundleTypeName": "Folder",
-            "CFBundleTypeRole": "Viewer",
-            "LSItemContentTypes": [
-              "public.folder"
-            ],
-            "LSHandlerRank": "Alternate"
-          }
-        ]
-      }
-    },
-    "protocols": [
-      {
-        "name": "GitNRun",
-        "schemes": [
-          "gitnrun"
-        ]
-      }
-    ]
   },
   "packageManager": "pnpm@9.15.9"
 }

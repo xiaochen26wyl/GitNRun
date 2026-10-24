@@ -87,7 +87,7 @@ const mobileManifestOf = (): RunManifest => {
   return result.manifest;
 };
 
-const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult; portsFiles?: Record<string, Record<string, number>> } = {}, extra: { earlyExitCheckMs?: number } = {}) => {
+const harness = (options: { detectFramework?: (folder: string, spec: { name: string }) => Promise<string | null>; loaded?: LoadedManifest; iterm?: boolean; allow?: boolean; launch?: { code: number; stderr: string }; discovered?: Array<{ label: string; folder: string }>; readmes?: Record<string, string>; openDocument?: { ok: true } | { ok: false; message: string }; passcodeFiles?: Record<string, string>; candidates?: Record<string, PasscodeBinding[]>; packages?: string[]; installers?: Record<string, InstallManager>; reinstallAllow?: boolean; sweep?: PortSweepResult; portsFiles?: Record<string, Record<string, number>> } = {}, extra: { earlyExitCheckMs?: number; iosServiceAlive?: (udid: string) => Promise<boolean> } = {}) => {
   /** 資料夾裡目前的殘留程序；結束後清空。 */
   const staleState = { list: [] as StaleProcess[], allow: true, ended: [] as number[][], confirms: 0, failEnd: false, releases: [] as Array<{ service: string; ports: number[] }> };
   const db = createTestDb();
@@ -227,10 +227,11 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
       return staleState.allow;
     },
     confirmRelease: async (request) => {
-      staleState.releases.push({ service: request.service, ports: request.ports });
+      for (const item of request.items) staleState.releases.push({ service: item.service, ports: item.ports });
       return staleState.allow;
     },
     earlyExitCheckMs: extra.earlyExitCheckMs ?? 0,
+    ...(extra.iosServiceAlive === undefined ? {} : { iosServiceAlive: extra.iosServiceAlive }),
     openUrl: async (url) => void opened.push(url),
     ...(options.detectFramework === undefined ? {} : { detectFramework: options.detectFramework }),
     findReadme: (folder) => options.readmes?.[folder] ?? null,
@@ -292,7 +293,7 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
 
 const ok = (value: { ok: boolean }): void => assert.equal(value.ok, true, JSON.stringify(value));
 const serviceAction = (service: string, action: RunServiceActionName): RunAction => ({ scope: "service", service, action });
-const stopProject: RunAction = { scope: "project", action: "stop" };
+const stopProject: RunAction = { scope: "project", action: "release-all" };
 
 describe("run handlers: listing", () => {
   it("lists projects that have a local path plus added folders, without duplicates", async () => {
@@ -360,6 +361,26 @@ describe("run handlers: listing", () => {
     ]);
   });
 
+  it("沒有 port 的 iOS 服務：綁定的模擬器有 flutter run 在跑就顯示執行中，不影響其他服務", async () => {
+    const udid = "A6EFE51B-D80F-401A-86E3-4EFEC089F8F0";
+    const result = validateManifest({
+      version: 1,
+      services: [
+        { name: "api", role: "backend", command: ["pnpm", "dev"], port: true, env: { PORT: "{port}" } },
+        { name: "mobile-ios", role: "desktop", cwd: "apps/mobile", command: ["flutter", "run", "-d", udid], port: false },
+        { name: "worker", role: "backend", command: ["pnpm", "worker"], port: false }
+      ]
+    });
+    assert.ok(result.ok);
+    const alive = new Set<string>([udid]);
+    const h = harness({ loaded: { status: "ok", manifest: result.manifest, hash: "a".repeat(64) } }, { iosServiceAlive: async (id) => alive.has(id) });
+    h.project("/work/app");
+    const states = async () => (await h.handlers.overview()).targets[0]?.services.map((s) => [s.name, s.state, s.port]);
+    assert.deepEqual(await states(), [["api", "stopped", null], ["mobile-ios", "running", null], ["worker", "stopped", null]]);
+    alive.delete(udid);
+    assert.deepEqual(await states(), [["api", "stopped", null], ["mobile-ios", "stopped", null], ["worker", "stopped", null]]);
+  });
+
   it("記錄在 ports.json 裡、但其實已經沒人監聽的 port 不會被誤認成還在跑", async () => {
     const h = harness({
       loaded: { status: "ok", manifest: fixedManifestOf(), hash: "a".repeat(64) },
@@ -424,11 +445,6 @@ describe("run handlers: one-click start", () => {
     assert.equal(h.launched[0]?.[0]?.command, "env PORT=5174 pnpm dev");
     assert.equal(h.launched[0]?.[1]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
     assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.fixedPort, 5174);
-    h.listening.add(5174);
-    h.listening.add(41001);
-    ok(await h.handlers.run(target, serviceAction("web", "restart")));
-    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), [`gitnrun p:${project.id} web`]);
-    assert.equal(h.launched[1]?.[0]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
   });
 
   it("refuses an occupied fixed port without launching or stopping its owner", async () => {
@@ -488,42 +504,6 @@ describe("run handlers: one-click start", () => {
     assert.match(again.ok ? again.message : "", /已經在執行中/);
   });
 
-  it("restarts backend/frontend services on the same ports", async () => {
-    const h = harness();
-    const project = h.project();
-    await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
-    h.listening.add(41001);
-    h.listening.add(41002);
-
-    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart")));
-
-    assert.equal(h.launched.length, 2);
-    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), ["gitnrun p:1 web"]);
-    assert.equal(h.launched[1]?.[0]?.command, "env PORT=41002 API=http://localhost:41001 pnpm dev");
-    assert.deepEqual(h.stopped, [[41002]]);
-    assert.deepEqual(h.closed, [["gitnrun p:1 web"]]);
-    assert.deepEqual(h.written.at(-1)?.services, { api: { role: "backend", port: 41001 }, web: { role: "frontend", port: 41002 } });
-  });
-
-  it("restarting the frontend leaves the backend untouched, and restarting the backend leaves the frontend", async () => {
-    const h = harness();
-    const project = h.project();
-    const target = `p:${project.id}`;
-    await h.handlers.run(target, serviceAction("web", "start"));
-    h.listening.add(41001);
-    h.listening.add(41002);
-    ok(await h.handlers.run(target, serviceAction("api", "restart")));
-    assert.deepEqual(h.launched[1]?.map((tab) => tab.name), [`gitnrun p:${project.id} api`]);
-    assert.deepEqual(h.stopped, [[41001]]);
-  });
-
-  it("starts the backend a frontend restart depends on when it is not running", async () => {
-    const h = harness();
-    const project = h.project();
-    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart")));
-    assert.deepEqual(h.launched[0]?.map((tab) => tab.name), [`gitnrun p:${project.id} api`, `gitnrun p:${project.id} web`]);
-  });
-
   it("starts the shared backend only once when two frontends are started at the same time", async () => {
     const h = harness();
     const project = h.project();
@@ -533,91 +513,105 @@ describe("run handlers: one-click start", () => {
     assert.equal(names.filter((name) => name.endsWith(" api")).length, 1);
   });
 
-  describe("restart ends the old services first", () => {
-    const startedHarness = async (options: Parameters<typeof harness>[0] = {}) => {
-      const h = harness(options);
-      const project = h.project();
-      await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
-      h.listening.add(41001);
-      h.listening.add(41002);
-      return { h, targetId: `p:${project.id}` };
+  describe("backend group actions", () => {
+    const saasManifestOf = (): RunManifest => {
+      const result = validateManifest({
+        version: 1,
+        services: [
+          { name: "api", role: "backend", command: ["pnpm", "api"], port: true, env: { PORT: "{port}" } },
+          { name: "worker", role: "backend", command: ["pnpm", "worker"], port: false, env: {} },
+          { name: "beat", role: "backend", command: ["pnpm", "beat"], port: false, env: {} },
+          { name: "edge", role: "backend", command: ["pnpm", "edge"], port: true, needs: ["api"], env: { PORT: "{port}", API: "{api.url}" } },
+          { name: "web", role: "frontend", command: ["pnpm", "web"], port: true, env: { PORT: "{port}", API: "{edge.url}" } }
+        ]
+      });
+      assert.ok(result.ok);
+      return result.manifest;
     };
+    const project = (options: Parameters<typeof harness>[0] = {}) => {
+      const h = harness({ loaded: { status: "ok", manifest: saasManifestOf(), hash: "s".repeat(64) }, ...options });
+      return { h, targetId: `p:${h.project().id}` };
+    };
+    const projectAction = (action: "start-backend" | "release-backend"): RunAction => ({ scope: "project", action });
+    const tabNames = (h: ReturnType<typeof harness>) => h.launched.flat().map((tab) => tab.name.split(" ").pop());
 
-    it("stops the ports and closes the old tabs before opening the new ones", async () => {
-      const { h, targetId } = await startedHarness();
-
-      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
-
-      ok(result);
-      assert.deepEqual(h.events, ["launch", "stopPorts", "closeTabs", "launch"]);
-      assert.match(result.message, /已結束 1 個服務並關閉終端機分頁：web，已在 iTerm2 重新開啟 1 個分頁：web/);
-      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["running", "starting", "stopped"]);
-    });
-
-    it("does not open new tabs when the old services cannot be stopped", async () => {
-      const { h, targetId } = await startedHarness();
-      h.state.stop = { code: 1, stderr: "kill 失敗" };
-
-      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
-
-      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
-      assert.match(result.message, /無法結束：kill 失敗/);
+    it("starts every backend in one batch of tabs and leaves the frontend alone", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, projectAction("start-backend")));
       assert.equal(h.launched.length, 1);
-      assert.deepEqual(h.closed, []);
+      assert.deepEqual(tabNames(h), ["api", "worker", "beat", "edge"]);
     });
 
-    it("does not open new tabs when macOS refuses to close the old tabs", async () => {
-      const { h, targetId } = await startedHarness();
-      h.state.close = { code: 1, stderr: "not authorized to send apple events (-1743)" };
-
-      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
-
-      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
-      assert.equal(h.launched.length, 1);
-    });
-
-    it("leaves the running services alone when the user denies a changed manifest", async () => {
-      const { h, targetId } = await startedHarness();
-      h.setLoaded({ status: "ok", manifest: manifestOf(), hash: "b".repeat(64) });
-      h.state.allow = false;
-
-      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
-
-      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "denied"]);
-      assert.deepEqual(h.events, ["launch"]);
-      assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["running", "running", "stopped"]);
-    });
-
-    it("still opens the services when nothing was running", async () => {
-      const h = harness();
-      const project = h.project();
-
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("web", "restart"));
-
-      ok(result);
-      assert.deepEqual(h.events, ["launch"]);
-      assert.equal(h.launched[0]?.[0]?.command, "env DEV_PORT=41001 FRONT=http://localhost:41002 pnpm dev");
-    });
-
-    it("waits for a slow old service to release its port before opening new tabs", async () => {
-      const { h, targetId } = await startedHarness();
-      h.state.release = "slow";
-
-      ok(await h.handlers.run(targetId, serviceAction("web", "restart")));
-
-      assert.deepEqual(h.events, ["launch", "stopPorts", "closeTabs", "launch"]);
+    it("only starts the backends that are not already running, including ones without a port", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, serviceAction("worker", "start")));
+      ok(await h.handlers.run(targetId, projectAction("start-backend")));
+      assert.deepEqual(h.launched.slice(1).flat().map((tab) => tab.name.split(" ").pop()), ["api", "beat", "edge"]);
+      const again = await h.handlers.run(targetId, projectAction("start-backend"));
+      ok(again);
+      assert.match(again.message, /已經在執行中/);
       assert.equal(h.launched.length, 2);
     });
 
-    it("does not open new tabs while an old service still holds its port", async () => {
-      const { h, targetId } = await startedHarness();
-      h.state.release = "never";
+    it("stops only the backends and closes their tabs, including the ones without a port", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, serviceAction("web", "start")));
+      h.listening.add(41001);
+      h.listening.add(41002);
+      h.listening.add(41003);
+      const result = await h.handlers.run(targetId, projectAction("release-backend"));
+      ok(result);
+      const closed = h.closed.flat().map((name) => name.split(" ").pop()).sort();
+      assert.deepEqual(closed, ["api", "beat", "edge", "worker"]);
+    });
 
-      const result = await h.handlers.run(targetId, serviceAction("web", "restart"));
+    it("releases the whole backend group with one confirmation and closes every backend tab", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, serviceAction("web", "start")));
+      for (const port of [41001, 41002, 41003]) h.listening.add(port);
+      const result = await h.handlers.run(targetId, projectAction("release-backend"));
+      ok(result);
+      assert.equal(h.stopped.length, 1);
+      assert.deepEqual(h.staleState.releases.map((item) => item.service), ["api", "worker", "beat", "edge"]);
+      assert.deepEqual(h.closed.flat().map((name) => name.split(" ").pop()).sort(), ["api", "beat", "edge", "worker"]);
+      const states = (await h.handlers.overview()).targets[0]?.services.map((service) => [service.name, service.state]);
+      assert.deepEqual(states?.filter(([name]) => name !== "web").map(([, state]) => state), ["stopped", "stopped", "stopped", "stopped"]);
+    });
 
-      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
-      assert.match(result.message, /舊服務仍占用 port 41002/);
-      assert.equal(h.launched.length, 1);
+    it("does nothing when the user cancels the group release", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, projectAction("start-backend")));
+      h.listening.add(41001);
+      h.staleState.allow = false;
+      const result = await h.handlers.run(targetId, projectAction("release-backend"));
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "denied"]);
+      assert.deepEqual(h.stopped, []);
+      assert.deepEqual(h.closed, []);
+    });
+
+    it("releases everything in the project with release-all, frontend included", async () => {
+      const { h, targetId } = project();
+      ok(await h.handlers.run(targetId, serviceAction("web", "start")));
+      for (const port of [41001, 41002, 41003]) h.listening.add(port);
+      ok(await h.handlers.run(targetId, { scope: "project", action: "release-all" }));
+      assert.equal(h.stopped.length, 1);
+      assert.ok(h.closed.flat().some((name) => name.endsWith(" web")));
+    });
+
+    it("has nothing to release before anything was started", async () => {
+      const { h, targetId } = project();
+      const result = await h.handlers.run(targetId, projectAction("release-backend"));
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "nothing-to-do"]);
+    });
+
+    it("refuses when iTerm2 is missing or the project has no backend", async () => {
+      const missing = project({ iterm: false });
+      const result = await missing.h.handlers.run(missing.targetId, projectAction("start-backend"));
+      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "iterm-missing"]);
+
+      const plain = harness({ loaded: { status: "ok", manifest: mobileManifestOf(), hash: "m".repeat(64) } });
+      const noBackend = await plain.handlers.run(`p:${plain.project().id}`, projectAction("release-backend"));
+      assert.deepEqual([noBackend.ok, noBackend.ok ? "" : noBackend.reason], [false, "nothing-to-do"]);
     });
   });
 
@@ -642,7 +636,7 @@ describe("run handlers: one-click start", () => {
     h.listening.add(41001);
     h.listening.add(41002);
 
-    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "stop")));
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "release")));
 
     assert.deepEqual(h.stopped, [[41002]]);
     assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["running", "stopped", "stopped"]);
@@ -656,7 +650,7 @@ describe("run handlers: one-click start", () => {
     h.listening.add(41001);
     h.listening.add(41002);
 
-    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "stop")));
+    ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "release")));
     assert.deepEqual(h.closed, [["gitnrun p:1 web"]]);
 
     ok(await h.handlers.run(`p:${project.id}`, stopProject));
@@ -701,7 +695,7 @@ describe("run handlers: one-click start", () => {
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
 
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "release"));
 
       ok(result);
       assert.deepEqual(h.simulators, ["ios"]);
@@ -715,7 +709,7 @@ describe("run handlers: one-click start", () => {
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
 
-      ok(await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "stop")));
+      ok(await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "release")));
 
       assert.deepEqual(h.simulators, ["android"]);
     });
@@ -730,7 +724,7 @@ describe("run handlers: one-click start", () => {
       const h = harness({ loaded: { status: "ok", manifest: bound, hash: "m".repeat(64) } });
       const project = h.project();
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
-      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "release"));
 
       assert.deepEqual(h.simulatorDevices, [udid]);
     });
@@ -742,7 +736,7 @@ describe("run handlers: one-click start", () => {
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
       h.listening.add(41001);
 
-      ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "stop")));
+      ok(await h.handlers.run(`p:${project.id}`, serviceAction("web", "release")));
 
       assert.deepEqual(h.simulators, []);
     });
@@ -762,7 +756,7 @@ describe("run handlers: one-click start", () => {
       const project = h.project();
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
 
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "stop"));
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "release"));
 
       assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "nothing-to-do"]);
       assert.deepEqual(h.simulators, []);
@@ -774,7 +768,7 @@ describe("run handlers: one-click start", () => {
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
       h.state.simulator = { code: 127, stderr: "找不到 xcrun" };
 
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "release"));
 
       assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
       assert.match(result.message, /服務已結束，但無法關閉 iOS 模擬器：找不到 xcrun/);
@@ -787,40 +781,12 @@ describe("run handlers: one-click start", () => {
       await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
       h.state.close = { code: 1, stderr: "not authorized to send apple events (-1743)" };
 
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "stop"));
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "release"));
 
       assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
       assert.deepEqual(h.simulators, ["ios"]);
     });
 
-    it("closes the old tab and the iOS simulator before restarting the iOS service, and leaves Android alone", async () => {
-      const h = mobileHarness();
-      const project = h.project();
-      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
-      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-android", "start"));
-
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "restart"));
-
-      ok(result);
-      assert.deepEqual(h.events.slice(2), ["closeTabs", "simulator:ios", "launch"]);
-      assert.deepEqual(h.closed.at(-1), ["gitnrun p:1 mobile-anipurr-ios"]);
-      assert.deepEqual(h.simulators, ["ios"]);
-      assert.deepEqual(h.launched.at(-1)?.map((tab) => tab.name), ["gitnrun p:1 mobile-anipurr-ios"]);
-      assert.doesNotMatch(h.launched.at(-1)?.[0]?.command ?? "", /kill/);
-      assert.match(result.message, /並關閉 iOS 模擬器，已在 iTerm2 重新開啟 1 個分頁/);
-    });
-
-    it("does not open a new tab when the simulator cannot be closed during a restart", async () => {
-      const h = mobileHarness();
-      const project = h.project();
-      await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "start"));
-      h.state.simulator = { code: 127, stderr: "找不到 xcrun" };
-
-      const result = await h.handlers.run(`p:${project.id}`, serviceAction("mobile-anipurr-ios", "restart"));
-
-      assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "failed"]);
-      assert.equal(h.launched.length, 1);
-    });
   });
 
   it("does not clear other running services when a selected stopped service is stopped", async () => {
@@ -829,7 +795,7 @@ describe("run handlers: one-click start", () => {
     await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
     h.listening.add(41001);
     h.listening.add(41002);
-    const result = await h.handlers.run(`p:${project.id}`, serviceAction("panel", "stop"));
+    const result = await h.handlers.run(`p:${project.id}`, serviceAction("panel", "release"));
 
     assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "nothing-to-do"]);
     assert.deepEqual(h.stopped, []);
@@ -1682,10 +1648,10 @@ describe("run handlers: stale desktop processes", () => {
   it("stop also cleans processes that no session knows about", async () => {
     const { h, targetId } = make();
     h.staleState.list = [stale(9)];
-    const result = await h.handlers.run(targetId, serviceAction("desk", "stop"));
+    const result = await h.handlers.run(targetId, serviceAction("desk", "release"));
     ok(result);
     assert.deepEqual(h.staleState.ended, [[9]]);
-    const empty = await h.handlers.run(targetId, serviceAction("desk", "stop"));
+    const empty = await h.handlers.run(targetId, serviceAction("desk", "release"));
     assert.deepEqual([empty.ok, empty.ok ? "" : empty.reason], [false, "nothing-to-do"]);
   });
 
@@ -1696,7 +1662,7 @@ describe("run handlers: stale desktop processes", () => {
     const view = (await h.handlers.overview()).targets[0]?.services[0];
     assert.equal(view?.exitedEarly, true);
 
-    ok(await h.handlers.run(targetId, serviceAction("desk", "stop")));
+    ok(await h.handlers.run(targetId, serviceAction("desk", "release")));
     assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.exitedEarly, undefined);
   });
 

@@ -7,13 +7,14 @@ on:
     tags-ignore:
       - "v*"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   quality:
-    name: Typecheck, Boundary Guard, Tests, Build
+    name: Typecheck, Boundary Guard, Tests, Rust, Build
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -28,6 +29,16 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -40,8 +51,21 @@ jobs:
       - name: Run unit tests
         run: pnpm test:unit
 
-      - name: Build app
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Rust clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Build renderer and sidecar
         run: pnpm build
 
-      - name: Run build smoke test
+      - name: Prepare bundled Node
+        run: pnpm prepare:node
+
+      - name: Run sidecar smoke test
         run: pnpm smoke:build
+
+      - name: Package app (manual runs and tags only)
+        if: github.event_name == 'workflow_dispatch'
+        run: CI=true pnpm dist:mac

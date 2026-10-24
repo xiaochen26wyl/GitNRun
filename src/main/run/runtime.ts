@@ -15,6 +15,7 @@ import { isIosDeviceId, loadManifest } from "@main/run/manifest";
 import { fsPasscodeSource } from "@main/run/passcode-source";
 import { createSystemPortSweep } from "@main/run/port-sweep";
 import { ensureSimulatorWindow } from "@main/run/simulator-window";
+import { isIosServiceAlive } from "@main/run/ios-liveness";
 import { createSystemStaleProcesses } from "@main/run/stale-process";
 import { describeStale } from "@shared/stale-process";
 import { allocatePorts, probePort, readPortsFile, writePortsFile } from "@main/run/ports";
@@ -60,13 +61,15 @@ const confirmStale = async (request: ConfirmStaleRequest): Promise<boolean> => {
 
 const confirmRelease = async (request: ConfirmReleaseRequest): Promise<boolean> => {
   native().bounceDock();
-  const portLine = request.ports.length > 0 ? `將結束占用 port 的程序：${request.ports.join("、")}\n\n` : "";
+  const single = request.items.length === 1 ? request.items[0] : undefined;
+  const portLines = request.items.filter((item) => item.ports.length > 0).map((item) => `${item.service}：port ${item.ports.join("、")}`);
+  const portLine = portLines.length > 0 ? `將結束占用 port 的程序：${single !== undefined ? single.ports.join("、") : `\n${portLines.join("\n")}`}\n\n` : "";
   const staleLine = request.processes.length > 0 ? `將結束資料夾裡的殘留程序：\n${describeStale(request.processes, request.folder)}\n\n` : "";
   const response = await native().confirm({
     kind: "warning",
     title: "GitNRun",
-    message: `要釋放「${request.label}」的 ${request.service} 嗎？`,
-    detail: `${portLine}${staleLine}只會處理這個服務，同專案的其他服務不受影響。占用 port 的程序只送出結束訊號；殘留程序 3 秒後仍未退出才強制結束。`,
+    message: single !== undefined ? `要釋放「${request.label}」的 ${single.service} 嗎？` : `要釋放「${request.label}」的 ${request.items.length} 個服務嗎？`,
+    detail: `${portLine}${staleLine}只會處理${single !== undefined ? "這個服務" : `這 ${request.items.length} 個服務`}，同專案的其他服務不受影響。占用 port 的程序只送出結束訊號；殘留程序 3 秒後仍未退出才強制結束。`,
     buttons: ["取消", "釋放"],
     defaultId: 0,
     cancelId: 0
@@ -191,6 +194,7 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     stopPorts,
     closeSimulator,
     prepareSimulator: (udid) => ensureSimulatorWindow(udid),
+    iosServiceAlive: isIosServiceAlive,
     closeTabs: (sessionNames) => execForResult(OSASCRIPT, buildItermCloseArgs(sessionNames)),
     confirmCommands,
     confirmReinstall,
