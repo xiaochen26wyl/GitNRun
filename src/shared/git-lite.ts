@@ -72,6 +72,20 @@ export type IssueFeed =
   | { status: "failed"; message: string }
   | { status: "ready"; overview: GitLiteOverview };
 
+/** 共用的 git／issue 資料：feed 是最近一次的結果，withIssues 標明那份資料是不是連 issues 一起讀的。 */
+export interface FeedState {
+  feed: IssueFeed;
+  withIssues: boolean;
+}
+
+/** issue 區塊要用的資料：只讀本機 git 的結果沒有 issues，模式不符就維持載入中。 */
+export const feedForMode = (state: FeedState, withIssues: boolean): IssueFeed =>
+  state.withIssues === withIssues ? state.feed : { status: "loading" };
+
+/** 這一輪讀取失敗後的狀態：已經有資料就保留舊資料，不洗掉畫面。 */
+export const feedAfterFailure = (current: FeedState, message: string, withIssues: boolean): FeedState =>
+  current.feed.status === "ready" ? current : { feed: { status: "failed", message }, withIssues };
+
 /** 失敗時畫面上的處理：token 類去設定頁、連線類重試、找不到 repo 沒有可做的事。 */
 export type IssueAction = "settings" | "retry" | null;
 

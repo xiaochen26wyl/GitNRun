@@ -59,6 +59,11 @@ pub async fn ipc_invoke(
     if !is_valid_channel(&channel) {
         return Err(WireError::new("Error", "ipc: invalid channel"));
     }
+    // 視窗顯示由外殼自己處理，核心不需要知道。
+    if channel == crate::window::READY_CHANNEL {
+        crate::window::reveal_main_window(webview.app_handle());
+        return Ok(Value::Null);
+    }
     sidecar.invoke(&channel, args).await
 }
 

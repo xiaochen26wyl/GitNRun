@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorMessage } from "@shared/format";
 import { useProjectHead, type ProjectHeadAttrs } from "./hooks";
 import { DebugAccountActions } from "./DebugAccountActions";
@@ -17,7 +17,6 @@ import {
   type MobilePlatform,
   type RunAction,
   type RunButtonState,
-  type RunOverview,
   type RunServiceState,
   type RunServiceView,
   type RunTargetView
@@ -37,10 +36,10 @@ import {
 } from "@shared/run-order";
 import { isIssueSkippedGroup } from "@shared/git-lite";
 import { ChangeBadge } from "./ChangeBadge";
-import { IssueSection, useIssueDisplayPref, useIssueFeed } from "./IssueSection";
+import { IssueSection, useIssueDisplayPref } from "./IssueSection";
+import { useRunData } from "./RunDataContext";
 import { RunOrderEditor, RunSortSwitch, useRunOrderPref, useRunSortModePref } from "./RunOrderEditor";
 
-const REFRESH_MS = 4_000;
 const COPY_FLASH_MS = 1_500;
 
 const ROLE_LABEL = { backend: "後端", frontend: "前端", desktop: "桌面" } as const;
@@ -430,8 +429,12 @@ const TargetRow = ({
 }) => (
   <li className="project-row run-row">
     <div {...headProps(target.folder)}>
-      <div className="run-project-title">
+      <div className="run-project-line">
         <strong>{target.label}</strong>
+        {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
+        {changes}
+      </div>
+      <div className="run-project-title">
         <ActionButton
           label="README"
           state={target.readme}
@@ -453,9 +456,7 @@ const TargetRow = ({
           onClick={() => onAction({ scope: "project", action: "reinstall" })}
         />
         <PathCopyButton path={target.folder} missing={target.source === "project" && target.pathExists === false} />
-        {target.manifest === "invalid" ? <span className="warn-badge">啟動設定有誤</span> : null}
       </div>
-      {changes}
     </div>
 
     {target.manifest === "missing" ? (
@@ -486,17 +487,15 @@ const TargetRow = ({
   </li>
 );
 
-/** group：目前頁籤的分組，只顯示屬於它的專案；onUngroupedCount：每次刷新後回報對不到任何分組的專案數，讓外層決定要不要顯示「其他」頁籤。 */
+/** group：目前頁籤的分組，只顯示屬於它的專案；資料來自 App 層共用的 RunDataProvider，切頁籤不重抓。 */
 export const RunView = ({
   group,
-  onUngroupedCount,
   onOpenSettings
 }: {
   group: RunGroup;
-  onUngroupedCount: (count: number) => void;
   onOpenSettings: () => void;
 }) => {
-  const [overview, setOverview] = useState<RunOverview | null>(null);
+  const { overview, overviewError, refreshOverview: refresh, feed: issueFeed, gitFeed, refreshFeed: refreshIssues, setWantsIssues } = useRunData();
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [error, setError] = useState("");
   const [busyKey, setBusyKey] = useState("");
@@ -511,7 +510,8 @@ export const RunView = ({
   const [issuePref, setIssuePref] = useIssueDisplayPref();
   const showIssues = issuesAllowed && issuePref;
   // 依 issue 數量排序也要有 issue 資料，所以就算不顯示 issue 區塊也要讀。
-  const { feed: issueFeed, gitFeed, refresh: refreshIssues } = useIssueFeed(showIssues || sortMode === "issues");
+  const wantsIssues = showIssues || sortMode === "issues";
+  useEffect(() => setWantsIssues(wantsIssues), [wantsIssues, setWantsIssues]);
   // issue 數量排序疊在手動順序上：同數量沿用手動順序，資料還沒到位時就是手動順序。
   const manualTargets = orderedRunTargets(allTargets, group.id, savedOrder);
   const targets = sortMode === "issues" ? sortByOpenIssues(manualTargets, issueFeed) : manualTargets;
@@ -526,26 +526,6 @@ export const RunView = ({
   const hasTargets = targets.length > 0;
   const canReorder = targets.length > 1 || targets.some((target) => groupRunServices(target.services).length > 1);
   const defaultOrderEntries = reordering ? buildRunOrderEntries(allTargets, group.id, EMPTY_RUN_ORDER) : [];
-
-  const refresh = useCallback(() => {
-    void window.gitNRun
-      .getRunOverview()
-      .then(setOverview)
-      .catch((refreshError) => setError(errorMessage(refreshError)));
-  }, []);
-
-  // 分頁可見時才定期刷新狀態；離開這個分頁元件就卸載，輪詢隨之停止。
-  useEffect(() => {
-    refresh();
-    const timer = setInterval(() => {
-      if (!document.hidden) refresh();
-    }, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
-
-  useEffect(() => {
-    if (overview !== null) onUngroupedCount(countUngroupedRunTargets(overview.targets));
-  }, [overview, onUngroupedCount]);
 
   const act = async (target: RunTargetView, action: RunAction | readonly RunAction[]) => {
     const actions = "scope" in action ? [action] : action;
@@ -588,7 +568,7 @@ export const RunView = ({
       ) : null}
 
       {message ? <p className={message.ok ? "ok" : "warn"}>{message.text}</p> : null}
-      {error ? <p className="warn">{error}</p> : null}
+      {error || overviewError ? <p className="warn">{error || overviewError}</p> : null}
 
       {overview === null ? <p className="muted">載入中…</p> : null}
       {hasTargets ? (

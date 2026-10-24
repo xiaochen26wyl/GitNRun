@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   ISSUE_PREVIEW_COUNT,
   PUSH_REMINDER_THRESHOLD,
+  feedAfterFailure,
+  feedForMode,
   findGitLiteProject,
   formatGroupIssueTotal,
   isIssueSkippedFolder,
@@ -16,6 +18,7 @@ import {
   type GitLiteIssue,
   type GitLiteIssueErrorKind,
   type GitLiteOverview,
+  type FeedState,
   type GitLiteProject,
   type IssueFeed
 } from "@shared/git-lite";
@@ -287,5 +290,26 @@ describe("planChangeBadge", () => {
     assert.equal(isIssueSkippedFolder("/work/GitNRun"), true);
     const feed = ready(project("/work/GitNRun", { changedFiles: 60 }));
     assert.equal(planChangeBadge(feed, "/work/GitNRun").kind, "badge");
+  });
+});
+
+describe("shared feed state", () => {
+  const loaded = (withIssues: boolean): FeedState => ({ feed: ready(project("/work/a")), withIssues });
+
+  it("serves the shared data only when it was read in the requested mode", () => {
+    assert.equal(feedForMode(loaded(true), true).status, "ready");
+    assert.equal(feedForMode(loaded(false), false).status, "ready");
+    assert.deepEqual(feedForMode(loaded(false), true), { status: "loading" });
+    assert.deepEqual(feedForMode(loaded(true), false), { status: "loading" });
+  });
+
+  it("keeps existing data when a refresh fails", () => {
+    const current = loaded(true);
+    assert.equal(feedAfterFailure(current, "boom", true), current);
+  });
+
+  it("reports the failure when there is no data to keep", () => {
+    const empty: FeedState = { feed: { status: "loading" }, withIssues: false };
+    assert.deepEqual(feedAfterFailure(empty, "boom", true), { feed: { status: "failed", message: "boom" }, withIssues: true });
   });
 });

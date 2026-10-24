@@ -624,11 +624,22 @@ select {
 }
 .run-service-main,
 .run-service-actions,
-.run-project-title {
+.run-project-title,
+.run-project-line {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+/* 專案標題列：名稱與設定有誤徽章靠左，變更檔案數靠右；按鈕整排在下一列（.run-project-title）。 */
+.run-project-line {
+  flex-basis: 100%;
+}
+.run-project-line .change-badge {
+  margin: 0 0 0 auto;
+}
+.run-project-title {
+  flex-basis: 100%;
 }
 .run-service-title {
   font-size: 20px;
@@ -1110,17 +1121,13 @@ button.ghost {
   width: 56%;
 }
 
-/* 專案卡片標題下的變更檔案數；達 50 換警示色提醒推送。只用既有色票 token。 */
+/* 專案卡片標題下的變更檔案數；達 100 換警示色提醒推送。只用既有色票 token。 */
 .change-badge {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   margin: 2px 0;
-}
-
-.project-head .change-badge {
-  flex-basis: 100%;
 }
 
 .change-badge.reached {

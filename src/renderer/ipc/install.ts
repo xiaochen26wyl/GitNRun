@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { createGitNRunApi, type ShimTransport } from "./create-api";
+import { createShellReadySignal } from "@shared/shell-ready";
 import { createReloadPolicy, isUnavailableError } from "./reload-policy";
 
 /** Rust 在核心連線上線／離線時送的事件。 */
@@ -63,3 +64,8 @@ export const installTauriShim = (): void => {
     }
   });
 };
+
+/** 外殼首次繪製後呼叫；不在 Tauri 裡（瀏覽器預覽）什麼都不做。 */
+export const signalShellReady = createShellReadySignal((channel) =>
+  insideTauri() ? invoke("ipc_invoke", { channel, args: [] }) : Promise.resolve()
+);

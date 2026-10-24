@@ -5,17 +5,24 @@ import { ClaudeView } from "./ClaudeView";
 import { GeneralPanel } from "./GeneralPanel";
 import { LogsView } from "./LogsView";
 import { PortSweepPanel } from "./PortSweepPanel";
+import { RunDataProvider, useRunData } from "./RunDataContext";
 import { RunView } from "./RunView";
 import { SecretsPanel } from "./SecretsPanel";
 import logo from "./assets/logo.png";
 
 type Tab = RunGroupId | "claude" | "settings";
 
-export const App = () => {
+export const App = () => (
+  <RunDataProvider>
+    <AppBody />
+  </RunDataProvider>
+);
+
+const AppBody = () => {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [tab, setTab] = useState<Tab>(DEFAULT_RUN_GROUP_ID);
   // 對不到任何分組的專案數；大於 0 才多出「其他」頁籤，避免新專案悄悄消失。
-  const [ungrouped, setUngrouped] = useState(0);
+  const { ungrouped } = useRunData();
   const runGroups = ungrouped > 0 ? [...RUN_GROUPS, RUN_OTHER_GROUP] : RUN_GROUPS;
 
   useEffect(() => {
@@ -51,7 +58,7 @@ export const App = () => {
       </header>
 
       <main className="content">
-        {tab !== "settings" && tab !== "claude" ? <RunView key={tab} group={runGroupById(tab)} onUngroupedCount={setUngrouped} onOpenSettings={() => setTab("settings")} /> : null}
+        {tab !== "settings" && tab !== "claude" ? <RunView key={tab} group={runGroupById(tab)} onOpenSettings={() => setTab("settings")} /> : null}
         {tab === "claude" ? <ClaudeView /> : null}
         {tab === "settings" ? (
           <div className="settings-page">

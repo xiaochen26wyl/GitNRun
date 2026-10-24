@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { errorMessage } from "@shared/format";
+import { useCallback, useState, type ReactNode } from "react";
 import {
   ISSUE_PREVIEW_COUNT,
   parseIssueDisplayPref,
@@ -9,53 +8,7 @@ import {
   type IssueSectionPlan
 } from "@shared/git-lite";
 
-const REFRESH_MS = 60_000;
 const DISPLAY_PREF_KEY = "gitnrun.run.showIssues";
-
-interface FeedState {
-  feed: IssueFeed;
-  /** 這份資料是不是連 issues 一起讀的；只讀本機 git 的結果沒有 issues。 */
-  withIssues: boolean;
-}
-
-/**
- * 專案啟動頁的 git／issue 資料：開啟時讀一次，之後每分鐘讀一次且只在頁面可見時。
- * withIssues 為 false 時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。
- * feed 給 issue 區塊用，還沒拿到含 issues 的資料時維持載入中；gitFeed 給變更檔案數用，任何一份資料都行。
- */
-export const useIssueFeed = (withIssues: boolean): { feed: IssueFeed; gitFeed: IssueFeed; refresh: () => void } => {
-  const [state, setState] = useState<FeedState>({ feed: { status: "loading" }, withIssues });
-  // 切換模式時舊請求可能較晚回來，只收最新一次發出的請求。
-  const latest = useRef(0);
-
-  const refresh = useCallback(() => {
-    latest.current += 1;
-    const requestId = latest.current;
-    void window.gitNRun.getGitLiteOverview({ issues: withIssues }).then(
-      (overview) => {
-        if (requestId === latest.current) setState({ feed: { status: "ready", overview }, withIssues });
-      },
-      // 已有資料時，這一輪失敗不洗掉畫面。
-      (error) => {
-        if (requestId !== latest.current) return;
-        setState((current) =>
-          current.feed.status === "ready" ? current : { feed: { status: "failed", message: errorMessage(error) }, withIssues }
-        );
-      }
-    );
-  }, [withIssues]);
-
-  useEffect(() => {
-    refresh();
-    const timer = setInterval(() => {
-      if (!document.hidden) refresh();
-    }, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
-
-  const feed: IssueFeed = state.withIssues === withIssues ? state.feed : { status: "loading" };
-  return { feed, gitFeed: state.feed, refresh };
-};
 
 /** 「在專案下方顯示 GitHub issues」的偏好：只是這台機器上的檢視設定，存在 localStorage；讀寫失敗就用預設（開啟）。 */
 export const useIssueDisplayPref = (): [boolean, (next: boolean) => void] => {

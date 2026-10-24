@@ -152,6 +152,15 @@ pub fn run() {
     app.run(|handle, event| match event {
         // 關閉視窗只是銷毀畫面，app 與快捷鍵留在背景；要結束請用 ⌘Q（那時 code 是 Some）。
         RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
+        // 關閉主視窗只隱藏：WebView 與畫面狀態保留，再打開立即出現。
+        RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. }
+            if window::hides_instead_of_closing(&label) =>
+        {
+            api.prevent_close();
+            if let Some(window) = handle.get_webview_window(&label) {
+                let _ = window.hide();
+            }
+        }
         // Finder／網址／Dock 交給 app 開啟的項目（冷啟動時比 setup 還早到）。
         RunEvent::Opened { urls } => {
             if let Some(sidecar) = handle.try_state::<SidecarHandle>() {
