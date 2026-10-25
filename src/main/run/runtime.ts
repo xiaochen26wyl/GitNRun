@@ -11,9 +11,10 @@ import { native } from "@main/native/bridge";
 import { detectFramework, type FrameworkFs } from "@main/run/framework";
 import { createRunHandlers, type ConfirmCommandsRequest, type ConfirmReinstallRequest, type ConfirmReleaseRequest, type ConfirmStaleRequest, type RunHandlers } from "@main/run/handlers";
 import { detectInstaller } from "@main/run/installer";
-import { isIosDeviceId, loadManifest } from "@main/run/manifest";
+import { isAndroidDeviceId, isIosDeviceId, loadManifest } from "@main/run/manifest";
 import { fsPasscodeSource } from "@main/run/passcode-source";
 import { createSystemPortSweep } from "@main/run/port-sweep";
+import { createSystemPortOwners } from "@main/run/port-owners";
 import { ensureSimulatorWindow } from "@main/run/simulator-window";
 import { isIosServiceAlive } from "@main/run/ios-liveness";
 import { createSystemStaleProcesses } from "@main/run/stale-process";
@@ -28,7 +29,6 @@ const SHELL = "/bin/zsh";
 const PERSONAL_PROJECTS_ROOT = "/Users/zorawl/Documents/GitHub";
 /** 只會從主程序算出來的網址開瀏覽器；這裡再擋一次，避免任何呼叫端傳進其他網址。 */
 const LOCAL_URL = /^http:\/\/localhost:[1-9][0-9]{0,4}$/;
-const STOP_PORTS = /^kill -TERM \$\(lsof -ti tcp:[0-9]{1,5}\)(?: 2>\/dev\/null \|\| true; kill -TERM \$\(lsof -ti tcp:[0-9]{1,5}\))* 2>\/dev\/null \|\| true$/;
 
 const confirmCommands = async (request: ConfirmCommandsRequest): Promise<boolean> => {
   native().bounceDock();
@@ -127,40 +127,20 @@ const frameworkFs: FrameworkFs = {
   }
 };
 
-const stopPorts = (ports: number[]): Promise<{ code: number; stderr: string }> => {
-  if (ports.length === 0) {
-    return Promise.resolve({ code: 0, stderr: "" });
-  }
-  const command = ports.map((port) => `kill -TERM $(lsof -ti tcp:${port})`).join(" 2>/dev/null || true; ");
-  const safeCommand = `${command} 2>/dev/null || true`;
-  if (!STOP_PORTS.test(safeCommand)) {
-    return Promise.resolve({ code: 1, stderr: "停止指令格式不正確" });
-  }
-  return execForResult(SHELL, ["-lc", safeCommand]);
-};
-
 /**
- * 結束手機服務時關模擬器用的固定指令；不含任何外部輸入。
- * 啟動指令是用裝置名稱比對，不知道實際挑中哪一台，所以關掉該平台所有開著的模擬器。
- * 沒有開著的模擬器算成功；找不到 xcrun／adb 以非 0 結束並在 stderr 說明。
+ * 結束手機服務時關模擬器用的固定指令；裝置識別碼先驗格式，不含其他外部輸入。
+ * 一律只關服務綁定的那一台（iOS 用 UDID、Android 用 AVD 名稱或 emulator 序號），不關其他專案開著的模擬器。
+ * 那一台沒有開著算成功；找不到 xcrun／adb 以非 0 結束並在 stderr 說明。
  */
-const IOS_SHUTDOWN = [
-  'command -v xcrun >/dev/null 2>&1 || { echo "找不到 xcrun（請先安裝 Xcode）" >&2; exit 127; }',
-  'xcrun simctl list devices booted 2>/dev/null | grep -q "(Booted)" || exit 0',
-  "xcrun simctl shutdown booted"
-].join("; ");
-const ANDROID_SHUTDOWN = [
+const ADB_LOOKUP = [
   'adb_bin="$(command -v adb || true)"',
   '[ -n "$adb_bin" ] || adb_bin="$HOME/Library/Android/sdk/platform-tools/adb"',
-  '[ -x "$adb_bin" ] || { echo "找不到 adb（請先安裝 Android SDK platform-tools）" >&2; exit 127; }',
-  'for serial in $("$adb_bin" devices | awk \'/^emulator-[0-9]+[[:space:]]+device/ {print $1}\'); do "$adb_bin" -s "$serial" emu kill || exit 1; done'
-].join("; ");
+  '[ -x "$adb_bin" ] || { echo "找不到 adb（請先安裝 Android SDK platform-tools）" >&2; exit 127; }'
+];
 
-/** 平台對應的關模擬器指令。iOS 帶 UDID 時只關那一台（UDID 先驗格式）；沒帶就退回關全部。 */
-export const simulatorShutdownCommand = (platform: MobilePlatform, deviceId?: string | null): string => {
+export const simulatorShutdownCommand = (platform: MobilePlatform, deviceId: string): string => {
   switch (platform) {
     case "ios":
-      if (deviceId === undefined || deviceId === null) return IOS_SHUTDOWN;
       if (!isIosDeviceId(deviceId)) throw new Error("不合法的 iOS 模擬器 UDID");
       return [
         'command -v xcrun >/dev/null 2>&1 || { echo "找不到 xcrun（請先安裝 Xcode）" >&2; exit 127; }',
@@ -168,15 +148,21 @@ export const simulatorShutdownCommand = (platform: MobilePlatform, deviceId?: st
         `xcrun simctl shutdown ${deviceId}`
       ].join("; ");
     case "android":
-      return ANDROID_SHUTDOWN;
+      if (!isAndroidDeviceId(deviceId)) throw new Error("不合法的 Android 模擬器識別碼");
+      return [
+        ...ADB_LOOKUP,
+        `target='${deviceId}'`,
+        'for serial in $("$adb_bin" devices | awk \'/^emulator-[0-9]+[[:space:]]+device/ {print $1}\'); do if [ "$serial" = "$target" ] || [ "$("$adb_bin" -s "$serial" emu avd name 2>/dev/null | head -n 1 | tr -d "\\r")" = "$target" ]; then "$adb_bin" -s "$serial" emu kill || exit 1; fi; done'
+      ].join("; ");
   }
 };
 
-const closeSimulator = (platform: MobilePlatform, deviceId?: string | null): Promise<{ code: number; stderr: string }> =>
+const closeSimulator = (platform: MobilePlatform, deviceId: string): Promise<{ code: number; stderr: string }> =>
   execForResult(SHELL, ["-lc", simulatorShutdownCommand(platform, deviceId)]);
 
-export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; copySecret: (secret: string) => Promise<void> }): RunHandlers =>
-  createRunHandlers({
+export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; copySecret: (secret: string) => Promise<void> }): RunHandlers => {
+  const portOwners = createSystemPortOwners();
+  return createRunHandlers({
     db: deps.db,
     logger: deps.logger,
     vault: deps.vault,
@@ -191,7 +177,8 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     itermAvailable: () => detectAvailability().iterm,
     inspect,
     launchTabs: (tabs) => execForResult(OSASCRIPT, buildItermTabsArgs(tabs)),
-    stopPorts,
+    stopPorts: (ports, folder) => portOwners.stop(folder, ports),
+    portOwners: (folder, ports) => portOwners.resolve(folder, ports),
     closeSimulator,
     prepareSimulator: (udid) => ensureSimulatorWindow(udid),
     iosServiceAlive: isIosServiceAlive,
@@ -214,3 +201,4 @@ export const createRunRuntime = (deps: { db: Db; logger: Logger; vault: Vault; c
     openDocument: (path) => openPath(path, DEFAULT_DOCUMENT_OPENER, "file"),
     now: Date.now
   });
+};

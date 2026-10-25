@@ -26,7 +26,7 @@ import {
   type RunRole,
   type RunManifest
 } from "@shared/run";
-import { FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, iosDeviceIdOf, iosRunScript, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
+import { FLUTTER_ANDROID_AVD_ID, FLUTTER_ANDROID_RUN_SCRIPT, FLUTTER_IOS_RUN_SCRIPT, androidDeviceIdOf, iosDeviceIdOf, iosRunScript, jsonErrorPosition, loadManifest, type ManifestFs } from "@main/run/manifest";
 import { simulatorShutdownCommand } from "@main/run/runtime";
 import { hasTrustedBefore, isRunTrusted, trustRunManifest, addRunFolder, listRunFolders, removeRunFolder } from "@main/run/store";
 import { createTestDb } from "./helpers/db";
@@ -613,17 +613,29 @@ describe("mobile services share one row", () => {
     assert.deepEqual(names(groupRunServices(of("flutter-ios2", "ios2-flutter"))), ["mobile:flutter-ios2", "ios2-flutter"]);
   });
 
-  it("uses a fixed shutdown command per platform", () => {
-    const ios = simulatorShutdownCommand("ios");
-    const android = simulatorShutdownCommand("android");
-    assert.match(ios, /xcrun simctl shutdown booted/);
+  it("uses a fixed shutdown command that only targets the bound device", () => {
     const udid = "11111111-2222-3333-4444-555555555555";
-    assert.match(simulatorShutdownCommand("ios", udid), new RegExp(`xcrun simctl shutdown ${udid}$`));
-    assert.doesNotMatch(simulatorShutdownCommand("ios", udid), /shutdown booted/);
+    const ios = simulatorShutdownCommand("ios", udid);
+    assert.match(ios, new RegExp(`xcrun simctl shutdown ${udid}$`));
+    assert.doesNotMatch(ios, /shutdown booted/);
     assert.throws(() => simulatorShutdownCommand("ios", "x; reboot"));
-    assert.match(android, /emu kill/);
+
+    const android = simulatorShutdownCommand("android", "Pixel_6_API_34_dev");
+    assert.match(android, /target='Pixel_6_API_34_dev'/);
+    assert.match(android, /emu avd name/);
+    assert.match(android, /"\$serial" = "\$target"/);
+    assert.throws(() => simulatorShutdownCommand("android", "x'; reboot #"));
     assert.notEqual(ios, android);
-    assert.equal(simulatorShutdownCommand("ios"), ios);
+  });
+
+  it("reads the Android device a service is bound to, and ignores generic targets", () => {
+    assert.equal(androidDeviceIdOf(["npm", "run", "mobile:run", "--", "-d", "Pixel_6_API_34_dev"]), "Pixel_6_API_34_dev");
+    assert.equal(androidDeviceIdOf(["zsh", "-lc", FLUTTER_ANDROID_RUN_SCRIPT]), FLUTTER_ANDROID_AVD_ID);
+    assert.equal(androidDeviceIdOf(["flutter", "run", "-d", "emulator-5554"]), "emulator-5554");
+    assert.equal(androidDeviceIdOf(["flutter", "run", "-d", "emulator"]), null);
+    assert.equal(androidDeviceIdOf(["flutter", "run", "-d", "chrome"]), null);
+    assert.equal(androidDeviceIdOf(["flutter", "run", "-d", "11111111-2222-3333-4444-555555555555"]), null);
+    assert.equal(androidDeviceIdOf(["flutter", "run"]), null);
   });
 });
 

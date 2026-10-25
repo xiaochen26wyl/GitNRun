@@ -50,6 +50,20 @@ export const iosRunScript = (udid: string): string => {
   ].join("; ");
 };
 export const FLUTTER_IOS_RUN_SCRIPT = iosRunScript(FLUTTER_IOS_DEVICE_ID);
+const ANDROID_DEVICE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+/** 泛用的 -d 目標：沒指定到哪一台，不能據此關模擬器。 */
+const GENERIC_DEVICE_TARGETS = new Set(["emulator", "chrome", "macos", "web-server", "edge"]);
+export const isAndroidDeviceId = (value: string): boolean => ANDROID_DEVICE_ID.test(value);
+/** 從 Android 服務的啟動指令取回它綁定的 AVD 名稱或 emulator 序號；只寫泛用的 `-d emulator` 時回傳 null。 */
+export const androidDeviceIdOf = (command: readonly string[]): string | null => {
+  const launch = /flutter emulators --launch ([A-Za-z0-9][A-Za-z0-9_.-]{0,63})/.exec(command.join(" "));
+  if (launch?.[1] !== undefined) return launch[1];
+  for (const [index, part] of command.entries()) {
+    const next = command[index + 1];
+    if ((part === "-d" || part === "--device-id") && next !== undefined && ANDROID_DEVICE_ID.test(next) && !GENERIC_DEVICE_TARGETS.has(next.toLowerCase()) && !isIosDeviceId(next)) return next;
+  }
+  return null;
+};
 /** 從 iOS 服務的啟動指令取回它綁定的模擬器 UDID；不是 iosRunScript 產生的指令回傳 null。 */
 export const iosDeviceIdOf = (command: readonly string[]): string | null => {
   const match = /xcrun simctl boot ([0-9A-F-]{36}) >\/dev\/null/i.exec(command.join(" "));

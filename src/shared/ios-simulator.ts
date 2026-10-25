@@ -35,20 +35,61 @@ export const deviceNameOf = (listJson: string, udid: string): string | null => {
   return null;
 };
 
+/** `com.apple.CoreSimulator.SimRuntime.iOS-26-5` → 選單上的「iOS 26.5」；格式不對回傳 null。 */
+export const runtimeMenuLabel = (runtimeKey: string): string | null => {
+  const match = /(?:^|\.)([A-Za-z]+)-(\d+(?:-\d+)*)$/.exec(runtimeKey);
+  return match === null ? null : `${match[1]} ${(match[2] ?? "").split("-").join(".")}`;
+};
+
+/** 裝置所屬 runtime 在 File → Open Simulator 第一層的名稱；找不到裝置或格式不對回傳 null。 */
+export const runtimeLabelOf = (listJson: string, udid: string): string | null => {
+  try {
+    const parsed = JSON.parse(listJson) as { devices?: Record<string, Array<{ udid?: unknown }>> };
+    for (const [key, devices] of Object.entries(parsed.devices ?? {})) {
+      if (devices.some((device) => typeof device.udid === "string" && device.udid.toUpperCase() === udid.toUpperCase())) return runtimeMenuLabel(key);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
 /**
- * 開啟指定裝置視窗的 AppleScript（裝置名稱用參數傳入，不拼進腳本）。
- * 視窗標題是「<裝置名稱> – iOS 版本」，已有該視窗就不再點選單，避免搶走焦點。
+ * 開啟指定裝置視窗的 AppleScript（裝置名稱、runtime 名稱用參數傳入，不拼進腳本）。
+ * File → Open Simulator 是兩層選單：第一層是 iOS 版本，裝置在第二層。先點裝置所屬版本，找不到再逐一搜尋所有版本。
+ * 視窗標題是「<裝置名稱> – iOS 版本」，已有該視窗就不再點選單，避免搶走焦點；視窗剛建立時名稱可能是 missing value，讀不到的略過。
  */
 export const OPEN_SIMULATOR_WINDOW_SCRIPT = [
   "on run argv",
   "  set deviceName to item 1 of argv",
+  "  set runtimeLabel to item 2 of argv",
+  "  set seen to {}",
   '  tell application "System Events" to tell process "Simulator"',
-  "    repeat with windowName in (name of every window)",
-  '      if (windowName as text) starts with (deviceName & " – ") then return "exists"',
+  "    set windowNames to {}",
+  "    try",
+  "      set windowNames to name of every window",
+  "    end try",
+  "    repeat with windowName in windowNames",
+  "      try",
+  '        if ((contents of windowName) as text) starts with (deviceName & " – ") then return "exists"',
+  "      end try",
   "    end repeat",
-  '    click menu item deviceName of (menu 1 of menu item "Open Simulator" of (menu 1 of menu bar item "File" of menu bar 1))',
+  '    set openMenu to menu 1 of menu item "Open Simulator" of (menu 1 of menu bar item "File" of menu bar 1)',
+  "    try",
+  "      click menu item deviceName of (menu 1 of menu item runtimeLabel of openMenu)",
+  '      return "opened"',
+  "    end try",
+  "    repeat with runtimeItem in (menu items of openMenu)",
+  "      try",
+  "        set end of seen to ((name of runtimeItem) as text)",
+  "      end try",
+  "      try",
+  "        click menu item deviceName of (menu 1 of runtimeItem)",
+  '        return "opened"',
+  "      end try",
+  "    end repeat",
   "  end tell",
-  '  return "opened"',
+  '  error "找不到裝置選單項目 " & deviceName & "（版本 " & runtimeLabel & "；選單內有 " & (seen as text) & "）"',
   "end run"
 ].join("\n");
 

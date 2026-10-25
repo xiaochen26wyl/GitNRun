@@ -34,6 +34,7 @@ import {
   type RunStartSelection,
   type RunTargetView
 } from "@shared/run";
+import { describeForeign, type PortOwnership } from "@shared/port-owner";
 import type { PortSweepResult, PortSweepScan } from "@shared/port-sweep";
 import { describeStale, isNodeStyleCommand, type StaleProcess } from "@shared/stale-process";
 import type { Db } from "@main/db/database";
@@ -42,7 +43,7 @@ import { UserFacingError } from "@main/errors";
 import type { Logger } from "@main/logger";
 import { AUTOMATION_DENIED, runSessionName, type ItermTab } from "@main/launcher/osascript";
 import { iosUdidOfCommand } from "@shared/ios-simulator";
-import { iosDeviceIdOf, serviceDirectory, type LoadedManifest } from "@main/run/manifest";
+import { androidDeviceIdOf, serviceDirectory, type LoadedManifest } from "@main/run/manifest";
 import { type PasscodeSourceReader } from "@main/run/passcode-source";
 import type { PortSweep } from "@main/run/port-sweep";
 import type { StaleProcesses } from "@main/run/stale-process";
@@ -81,10 +82,13 @@ export interface RunHandlerDeps {
   itermAvailable: () => boolean;
   inspect: (path: string) => Promise<"dir" | "file" | "missing">;
   launchTabs: (tabs: ItermTab[]) => Promise<{ code: number; stderr: string }>;
-  stopPorts: (ports: number[]) => Promise<{ code: number; stderr: string }>;
+  /** 結束這些 port 上屬於該專案資料夾的程序；別的程式占用的 port 不動。 */
+  stopPorts: (ports: number[], folder: string) => Promise<{ code: number; stderr: string }>;
+  /** 查這些 port 的監聽者哪些屬於該專案、哪些是別的程式；查不到的一律當作別人的。 */
+  portOwners: (folder: string, ports: readonly number[]) => Promise<PortOwnership>;
   closeTabs: (sessionNames: string[]) => Promise<{ code: number; stderr: string }>;
-  /** 關閉該平台目前開著的模擬器；沒有開著的模擬器算成功。 */
-  closeSimulator: (platform: MobilePlatform, deviceId?: string | null) => Promise<{ code: number; stderr: string }>;
+  /** 關閉服務綁定的那一台模擬器（iOS 用 UDID，Android 用 AVD 名稱或序號）；那一台沒開著算成功。 */
+  closeSimulator: (platform: MobilePlatform, deviceId: string) => Promise<{ code: number; stderr: string }>;
   /** 啟動 iOS 服務前讓它綁定的模擬器開機並顯示自己的視窗；沒注入就不處理。 */
   prepareSimulator?: (udid: string) => Promise<{ ok: boolean; message: string }>;
   /** 綁定 UDID 的 iOS 服務（沒有 port 可探測）是否還活著；沒注入就維持只看 session。 */
@@ -491,26 +495,37 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
   };
 
-  /** 這次結束的服務裡，有哪些手機平台就關哪些模擬器（iOS 在前）；只關開過的平台，一般服務不動。 */
+  /**
+   * 這次結束的手機服務各自綁定的模擬器才會關（iOS 在前）；指令沒指定到哪一台（例如 `-d emulator`）就不關，
+   * 避免連帶關掉別的專案開著的模擬器。回傳實際關掉的平台與因沒有綁定而略過的平台。
+   */
   const closeSimulators = async (
     target: Target,
     names: readonly string[],
     specs: readonly RunServiceSpec[] = []
-  ): Promise<{ platforms: MobilePlatform[]; failure: RunActionResult | null }> => {
+  ): Promise<{ platforms: MobilePlatform[]; skipped: MobilePlatform[]; failure: RunActionResult | null }> => {
     const used = new Set(names.map((name) => mobilePlatformOf(name)));
-    const platforms = (["ios", "android"] as const).filter((platform) => used.has(platform));
+    const platforms: MobilePlatform[] = [];
+    const skipped: MobilePlatform[] = [];
     let failure: RunActionResult | null = null;
-    for (const platform of platforms) {
-      // iOS 只關這個專案服務綁定的那台，避免連帶關掉別的專案的模擬器。
-      const iosService = platform === "ios" ? specs.find((spec) => names.includes(spec.name) && mobilePlatformOf(spec.name) === "ios") : undefined;
-      const deviceId = iosService === undefined ? null : iosDeviceIdOf(iosService.command);
+    for (const platform of (["ios", "android"] as const).filter((item) => used.has(item))) {
+      const service = specs.find((spec) => names.includes(spec.name) && mobilePlatformOf(spec.name) === platform);
+      const deviceId = service === undefined ? null : platform === "ios" ? iosUdidOfCommand(service.command) : androidDeviceIdOf(service.command);
+      if (deviceId === null) {
+        skipped.push(platform);
+        log("info", `${target.label} 的 ${SIMULATOR_LABEL[platform]} 服務沒有指定裝置，沒有關閉模擬器`);
+        continue;
+      }
       const result = await deps.closeSimulator(platform, deviceId);
-      if (result.code === 0) continue;
+      if (result.code === 0) {
+        platforms.push(platform);
+        continue;
+      }
       const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
       log("warn", `已結束 ${target.label}，但無法關閉 ${SIMULATOR_LABEL[platform]} 模擬器：${detail}`);
       if (failure === null) failure = fail("failed", `服務已結束，但無法關閉 ${SIMULATOR_LABEL[platform]} 模擬器：${detail}`);
     }
-    return { platforms, failure };
+    return { platforms, skipped, failure };
   };
 
   /** 角色是 desktop、也不是手機的服務（桌面 app，有沒有 port 都算）：關掉視窗後程序可能還活著，GitNRun 只能靠程序清單找到它。 */
@@ -568,6 +583,15 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       return fail("nothing-to-do", "沒有需要釋放的 port");
     }
 
+    // 候選 port 可能是舊記錄或固定 port，之後被別的專案占用；只處理屬於這個專案資料夾的監聽程序。
+    const probed = [...new Set(items.flatMap((item) => item.listening))];
+    const ownership = probed.length > 0 ? await deps.portOwners(target.folder, probed) : { owned: [], foreign: [] };
+    const ownedPorts = new Set(ownership.owned.map((entry) => entry.port));
+    for (const item of items) item.listening = item.listening.filter((port) => ownedPorts.has(port));
+    const foreignPorts = new Set(ownership.foreign.map((entry) => entry.port));
+    const foreignNote = ownership.foreign.length > 0 ? `；略過被其他程式占用的 ${describeForeign(ownership.foreign)}，沒有結束` : "";
+    if (ownership.foreign.length > 0) log("warn", `釋放 ${target.label} 時略過被其他程式占用的 ${describeForeign(ownership.foreign)}`);
+
     // 只有真的要結束別人的程序才需要確認；沒有任何程序在跑時只是清掉記錄與分頁。
     const listening = [...new Set(items.flatMap((item) => item.listening))];
     if (listening.length > 0 || stale.length > 0) {
@@ -584,13 +608,13 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     }
 
     if (listening.length > 0) {
-      const result = await deps.stopPorts(listening);
+      const result = await deps.stopPorts(listening, target.folder);
       if (result.code !== 0) {
         const detail = result.stderr.trim().slice(0, ERROR_TEXT_MAX) || "未知錯誤";
         log("warn", `無法釋放 ${target.label}：${detail}`);
         return fail("failed", `無法釋放：${detail}`);
       }
-      const busyPort = await waitForPortsFree(listening);
+      const busyPort = await waitForPortsFree(listening.filter((port) => !foreignPorts.has(port)));
       if (busyPort !== null) {
         log("warn", `無法釋放 ${target.label}：port ${busyPort} 仍被占用`);
         return fail("failed", `port ${busyPort} 仍被占用，可能是其他使用者的程序，請到活動監視器處理`);
@@ -635,8 +659,11 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
       stale.length > 0 ? `${stale.length} 個殘留程序` : null
     ].filter((part): part is string => part !== null);
     const subject = picked.length === 1 ? (picked[0] as RunServiceSpec).name : `${picked.length} 個服務`;
-    const simulatorNote = simulators.platforms.map((platform) => `，並關閉 ${SIMULATOR_LABEL[platform]} 模擬器`).join("");
-    const summary = parts.length > 0 ? `已釋放 ${subject}：${parts.join("、")}` : `${subject} 沒有程序在占用，已清掉啟動記錄`;
+    const simulatorNote = [
+      ...simulators.platforms.map((platform) => `，並關閉 ${SIMULATOR_LABEL[platform]} 模擬器`),
+      ...simulators.skipped.map((platform) => `；${SIMULATOR_LABEL[platform]} 服務沒有指定裝置，沒有關閉模擬器`)
+    ].join("");
+    const summary = `${parts.length > 0 ? `已釋放 ${subject}：${parts.join("、")}` : `${subject} 沒有程序在占用，已清掉啟動記錄`}${foreignNote}`;
     log("info", `${summary}（${target.label}）${simulatorNote}`);
     if (tabFailure !== null) return tabFailure;
     if (simulators.failure !== null) return simulators.failure;

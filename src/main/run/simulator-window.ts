@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { ACCESSIBILITY_DENIED, deviceNameOf, OPEN_SIMULATOR_WINDOW_SCRIPT } from "@shared/ios-simulator";
+import { ACCESSIBILITY_DENIED, deviceNameOf, OPEN_SIMULATOR_WINDOW_SCRIPT, runtimeLabelOf } from "@shared/ios-simulator";
 import { isIosDeviceId } from "@main/run/manifest";
 
 export interface ExecResult {
@@ -41,6 +41,7 @@ export const ensureSimulatorWindow = async (
 
   const list = await exec("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"]);
   const name = list.code === 0 ? deviceNameOf(list.stdout, udid) : null;
+  const runtimeLabel = (list.code === 0 ? runtimeLabelOf(list.stdout, udid) : null) ?? "";
   if (name === null) return { ok: false, message: `找不到 UDID 為 ${udid} 的模擬器` };
 
   // 已開機時 boot 會失敗，可以忽略；bootstatus -b 等到開機完成。
@@ -53,7 +54,7 @@ export const ensureSimulatorWindow = async (
 
   let lastError = "";
   for (let attempt = 0; attempt < OPEN_WINDOW_ATTEMPTS; attempt += 1) {
-    const result = await exec("/usr/bin/osascript", ["-e", OPEN_SIMULATOR_WINDOW_SCRIPT, name]);
+    const result = await exec("/usr/bin/osascript", ["-e", OPEN_SIMULATOR_WINDOW_SCRIPT, name, runtimeLabel]);
     if (result.code === 0) return { ok: true, message: `${name} 的視窗${result.stdout.trim() === "exists" ? "已存在" : "已開啟"}` };
     lastError = result.stderr.trim();
     if (ACCESSIBILITY_DENIED.test(lastError)) {

@@ -102,6 +102,8 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
   const confirms: ConfirmCommandsRequest[] = [];
   const written: Array<{ folder: string; services: Record<string, { port: number; role: string }> }> = [];
   const stopped: number[][] = [];
+  /** 被別的專案占用的 port（釋放時不能動）。 */
+  const foreign = new Map<number, { pid: number; command: string }>();
   const closed: string[][] = [];
   const simulators: MobilePlatform[] = [];
   const simulatorDevices: (string | null | undefined)[] = [];
@@ -172,6 +174,10 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
       launched.push(tabs);
       return state.launch;
     },
+    portOwners: async (_folder, ports) => ({
+      owned: ports.filter((port) => !foreign.has(port)).map((port) => ({ port, pids: [port + 1000] })),
+      foreign: ports.filter((port) => foreign.has(port)).map((port) => ({ port, ...(foreign.get(port) as { pid: number; command: string }) }))
+    }),
     stopPorts: async (ports) => {
       events.push("stopPorts");
       stopped.push(ports);
@@ -267,6 +273,7 @@ const harness = (options: { detectFramework?: (folder: string, spec: { name: str
     listening,
     launched,
     stopped,
+    foreign,
     closed,
     simulators,
     simulatorDevices,
@@ -683,6 +690,40 @@ describe("run handlers: one-click start", () => {
     assert.deepEqual([result.ok, result.ok ? "" : result.reason], [false, "permission-denied"]);
     assert.deepEqual(h.stopped, [[41001, 41002]]);
     assert.deepEqual((await h.handlers.overview()).targets[0]?.services.map((service) => service.state), ["stopped", "stopped", "stopped"]);
+  });
+
+  describe("releasing ports only touches this project", () => {
+    it("skips a port that another project's process is listening on, and says so", async () => {
+      const h = harness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+      h.listening.add(41001);
+      h.listening.add(41002);
+      h.foreign.set(41002, { pid: 1709, command: "node" });
+
+      const result = await h.handlers.run(`p:${project.id}`, stopProject);
+
+      ok(result);
+      assert.deepEqual(h.stopped, [[41001]]);
+      assert.match(result.message, /略過被其他程式占用的 port 41002（node PID 1709）/);
+      assert.ok(h.listening.has(41002), "別人的 port 仍在監聽");
+      assert.deepEqual(h.staleState.releases.flatMap((item) => item.ports), [41001]);
+    });
+
+    it("kills nothing and does not ask for confirmation when every candidate port belongs to someone else", async () => {
+      const h = harness();
+      const project = h.project();
+      await h.handlers.run(`p:${project.id}`, serviceAction("web", "start"));
+      h.listening.add(41002);
+      h.foreign.set(41002, { pid: 0, command: "" });
+
+      const result = await h.handlers.run(`p:${project.id}`, serviceAction("web", "release"));
+
+      ok(result);
+      assert.deepEqual(h.stopped, []);
+      assert.equal(h.staleState.releases.length, 0);
+      assert.match(result.message, /port 41002（無法辨識占用者）/);
+    });
   });
 
   describe("mobile services", () => {

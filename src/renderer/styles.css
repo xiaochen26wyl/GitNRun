@@ -468,12 +468,29 @@ select {
   margin-left: auto;
 }
 
+/* 時間與類別兩欄寬度隨視窗寬度（vw）調整並設下限，訊息欄吃剩下的空間，長訊息只在自己那欄換行，不擠壓前兩欄。 */
 .log {
-  display: flex;
+  display: grid;
+  grid-template-columns: clamp(8.5rem, 11vw, 11rem) clamp(5.5rem, 7vw, 7.5rem) minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.log > span:first-child {
+  white-space: nowrap;
+}
+
+.log .badge {
+  margin-left: 0;
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.log > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .log-warn span:last-child {

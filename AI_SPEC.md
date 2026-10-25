@@ -1,6 +1,8 @@
-# GitNRun AI 規格文件
+# PortPilot AI 規格文件
 
-本文件是給 AI agent 與維護者續作 GitNRun 時使用的主要需求表與規格來源。README 只保留精簡介紹；功能細節、產品邊界、安全要求與後續維護規則集中放在這裡。
+本文件是給 AI agent 與維護者續作 PortPilot 時使用的主要需求表與規格來源。README 只保留精簡介紹；功能細節、產品邊界、安全要求與後續維護規則集中放在這裡。
+
+> 本文件中的產品名稱（PortPilot）、設定目錄、port 號碼、裝置識別碼與專案名稱皆為示範值，使用時請換成自己的。
 
 ## 專案目標與核心原則
 
@@ -20,10 +22,10 @@
 | 規則引擎 | 依事件自動通知、呼叫外部服務或執行本機動作 | 已支援條件與多種動作 | 寫入型動作預設需確認；匯入規則預設停用且需要確認 |
 | AI 助手 | 產生 commit 訊息、事件摘要、推送建議與衝突說明 | 已支援 Claude/OpenAI 類型能力 | 每個專案預設不允許；無金鑰或離線時使用本機 fallback |
 | 一鍵終端機 | 將常用資料夾與指令映射成快速啟動入口 | 已支援資料夾映射、快捷啟動與外部開啟 | iTerm2/Terminal 可自動執行指令；其他終端機通常只能開資料夾 |
-| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依分組表分頁籤、個人專案根目錄掃描、`.gitnrun/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 GitNRun 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要換成自己的專案分組得改該檔；專案與 App 順序可在畫面手動調整（只存本機檢視偏好）；每個專案卡顯示 GitHub Issue 區塊 |
+| 專案啟動 | 一鍵啟動前端、後端、桌面與 Flutter web 服務，並用 README 按鈕開啟專案的 README.md | 已支援依分組表分頁籤、個人專案根目錄掃描、`.portpilot/run.json`、`package.json` scripts、Flutter 推測、固定或動態 port、停止、README 按鈕 | 僅支援 iTerm2 分頁啟動；推測出的服務需遵守注入的環境變數才會使用 PortPilot 配置的 port；README 只取專案根目錄的 `README.md`，一律用 Cursor 開啟，找不到時按鈕反灰；分組表寫在 `src/shared/run-groups.ts`，要換成自己的專案分組得改該檔；專案與 App 順序可在畫面手動調整（只存本機檢視偏好）；每個專案卡顯示 GitHub Issue 區塊 |
 | Claude 指令頁籤 | 主頁籤「Claude」（在「設定」之前）列出常用指令，每條附「複製」按鈕，免手打 | 分三組：終端機指令（`claude --model sonnet`、`clear`）、Claude 內指令（`/model sonnet`、`/model haiku`）、文字觸發語（推送、開工、完工）；複製走既有 `copyText` IPC，按鈕文字短暫顯示「已複製」或「複製失敗」 | 指令清單寫死在 `src/renderer/ClaudeView.tsx`，要增減指令得改該檔；內容非密鑰，不做剪貼簿自動清除；renderer 不直接用瀏覽器剪貼簿 API（走外殼的剪貼簿能力） |
-| 釋放終端機 port | 一鍵結束在終端機手動開的 port | 設定頁「連接埠掃描」先列出將結束的程序，確認後才結束 | 只處理本人擁有、有控制終端機、且不是 GitNRun 自身上下層的監聽程序；無終端機的背景服務（資料庫、Docker、系統程序）一律不碰 |
-| Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（GitNRun 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
+| 釋放終端機 port | 一鍵結束在終端機手動開的 port | 設定頁「連接埠掃描」先列出將結束的程序，確認後才結束 | 只處理本人擁有、有控制終端機、且不是 PortPilot 自身上下層的監聽程序；無終端機的背景服務（資料庫、Docker、系統程序）一律不碰 |
+| Dev 通關帳密 | 方便複製專案 dev/debug 登入資料 | 已支援專案層級帳號；Debug 密碼來源為專案環境檔裡的某個鍵（PortPilot 每次複製都重新讀取，只讀取、不保存、不寫入） | 帳號不進備份；環境檔路徑與鍵名隨設定備份，密碼留在專案環境檔，換機後隨專案回來 |
 | Webhook 接收 | 更快取得推送事件與確切推送者 | 已支援本機接收端與簽章驗證 | 只綁 `127.0.0.1`；公開網址需使用者自備隧道 |
 | 郵件通知 | 透過 email 推送事件或規則結果 | 動作類型保留 | 執行器尚未實作 |
 
@@ -41,11 +43,11 @@
 
 ## 安全與隱私規格
 
-- 資料目錄：`~/Library/Application Support/GitNRun/`。
-- 主要資料庫：`data/gitnrun.db`，資料夾權限應為 0700，資料庫權限應為 0600。
+- 資料目錄：`~/Library/Application Support/PortPilot/`。
+- 主要資料庫：`data/portpilot.db`，資料夾權限應為 0700，資料庫權限應為 0600。
 - 設定備份：`data/backups/`，每天本地時間 22:00 自動備份一次（錯過則下次啟動補做），也可手動「立即備份」；保留最近 10 份；備份不包含金鑰與 dev 通關帳密。
 - 金鑰包含 GitHub token、Anthropic/OpenAI key、Slack Webhook URL、Webhook 簽章 secret、規則敏感環境變數與 dev 密碼。
-- 金鑰以 AES-256-GCM（`gnr2:`）加密，主金鑰存在 macOS Keychain，密文存在 SQLite；系統無法加密時一律拒絕儲存，不退回明文。
+- 金鑰以 AES-256-GCM（`pp2:`）加密，主金鑰存在 macOS Keychain，密文存在 SQLite；系統無法加密時一律拒絕儲存，不退回明文。
 - UI 只顯示「已設定」與末四碼；存入後不提供讀回明文。
 - 明文只在主程序使用當下短暫解密，用完即丟；不得放入 argv、日誌或備份。
 - 日誌、指令輸出與 AI 請求記錄寫入前必須遮蔽已知密鑰值與常見 token 格式。
@@ -85,13 +87,13 @@
 | 按鈕 | 出現條件 | 可按條件 | 點擊行為 |
 |------|----------|----------|----------|
 | 啟動／開桌面 | 每個服務一顆；desktop 角色顯示「開桌面」，手機服務顯示「啟動 iOS」「啟動 Android」 | 找得到 iTerm2，且服務尚未執行 | 在 iTerm2 開新分頁啟動，動態 port 於此刻配置 |
-| 釋放 port | 每個服務一顆；手機列與後端群組列各共用一顆 | 該服務有可釋放的 port、殘留程序或啟動記錄 | 結束占用 port 的程序與殘留程序、關閉終端機分頁並清掉執行狀態；有程序要結束時先用原生對話框確認；手機服務一併關閉綁定的模擬器 |
+| 釋放 port | 每個服務一顆；手機列與後端群組列各共用一顆 | 該服務有可釋放的 port、殘留程序或啟動記錄 | 結束占用 port 的程序與殘留程序、關閉終端機分頁並清掉執行狀態；只結束「屬於該專案」的程序（見下方釋放範圍規則），有程序要結束時先用原生對話框確認；手機服務一併關閉綁定的那一台模擬器 |
 | 開網頁 | 僅 frontend 角色 | 前端已在執行 | 開啟實際 `http://localhost:<port>`，不自動啟動服務 |
 | 指令 | 每個服務一顆（手機為「iOS 指令」「Android 指令」） | 永遠可按 | 複製顯示用指令並展開浮層 |
 | README | 專案名稱旁 | 專案根目錄有 `README.md` | 用 Cursor 開啟，找不到時反灰 |
 | 啟動全部後端 | 同專案有兩個以上後端時，後端合併成一列 | 找得到 iTerm2，且還有後端尚未執行 | 同專案排隊，一次開出所有尚未執行的後端分頁（沒有 port 的 worker、排程以啟動記錄判斷，不重複開） |
 | 釋放全部後端 port | 後端群組列 | 任一後端可釋放 | 一次釋放所有後端，整批只確認一次 |
-| 釋放全部 port | 專案層級，每個專案固定顯示 | 該專案任一服務可釋放 | 釋放該專案所有服務，整批只確認一次，並清掉執行狀態與 `.dev/ports.json` |
+| 釋放全部 port | 專案層級，每個專案固定顯示 | 該專案任一服務可釋放 | 釋放該專案所有服務（前端與後端），整批只確認一次，並清掉執行狀態與 `.dev/ports.json`；絕不結束其他專案占用的 port，全域清理請用設定頁的連接埠掃描 |
 | 重裝依賴 | 專案層級 | 有 `package.json`、沒有服務在執行、找得到 iTerm2 | 刪除 `node_modules` 後以偵測到的套件管理員重裝 |
 | 複製路徑 | 專案層級 | 永遠可按 | 複製專案資料夾路徑，結果以按鈕文字短暫提示 |
 | Debug 密碼 | 專案層級 | 已綁定來源且環境檔讀得到該鍵 | 重新讀取環境檔並複製密碼；來源可在展開面板綁定、重選或解除 |
@@ -99,11 +101,11 @@
 
 ## 啟動描述檔與專案啟動規格
 
-專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描設定頁指定的專案根目錄第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；GitNRun 會先讀取可選的 `.gitnrun/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
+專案啟動頁會列出已設定本機路徑的專案（每個專案名稱旁有「README」按鈕，開啟專案根目錄的 `README.md`；原本的「文件空間」分頁已併入這裡，「專案根目錄」設定移到設定頁，供 Git / GitHub 頁掃描 repo），並自動掃描設定頁指定的專案根目錄第一層資料夾；已存在於專案資料表的項目以資料表名稱為準，其餘使用資料夾名稱。每個專案不需要手動新增設定檔；PortPilot 會先讀取可選的 `.portpilot/run.json`，沒有描述檔時再從 `package.json` scripts 推測服務，仍找不到時再依 Flutter 專案結構推測 Flutter web、iOS 模擬器與 Android 模擬器的啟動方式。
 
 專案啟動依分組表拆成頂部頁籤，每個頁籤只列屬於該組的專案。歸類只看專案資料夾路徑最後一段名稱，不分大小寫，不看資料表裡的顯示名稱。對不到任何一組的專案會讓「其他」頁籤出現在分組頁籤之後，沒有這類專案時不顯示。頁籤內的專案依分組表的資料夾順序排列，不受資料表或資料夾掃描順序影響。專案內服務列另有一張順序表（key 為專案資料夾名稱，值為服務名稱；同層級、並排的服務相鄰），只影響畫面順序，不影響啟動順序。分組表、服務列順序表與比對規則都在 `src/shared/run-groups.ts`，使用者應依自己的專案改寫這個檔案。
 
-`.gitnrun/run.json` 是進階覆寫設定，可進版控，用來明確描述服務啟動方式。
+`.portpilot/run.json` 是進階覆寫設定，可進版控，用來明確描述服務啟動方式。
 
 ```json
 {
@@ -115,7 +117,7 @@
       "cwd": "apps/api",
       "command": ["make", "run"],
       "port": true,
-      "fixedPort": 5174,
+      "fixedPort": 4310,
       "env": { "PORT": "{port}", "FRONTEND_URL": "{web.url}" }
     },
     {
@@ -141,12 +143,17 @@
 - 前端服務必須 `port: true`；後端可設 `port: false`（不監聽 port 的 worker、排程），以啟動後的工作階段判斷執行狀態，仍隨「啟動前後端」一起啟動。
 - 可選 `fixedPort: 1024～65535`；只能用於 `port: true`，同一描述檔不可重複。未指定者維持動態配置；固定 port 已被占用時拒絕啟動，不改用其他號碼，也不結束占用它的程序。
 - 沒有描述檔時，`package.json` 會依 script 名稱推測 backend、frontend、desktop；推測出的 web/backend 服務會注入 `PORT`、`DEV_PORT`，有後端時 frontend 也會注入 `API_BASE_URL`、`VITE_API_BASE_URL`。
-- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.gitnrun/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；釋放 port 時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令不是由此推測產生、找不到 UDID 時才退回關閉全部。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是作者自己的開發用 AVD，使用者必須換成自己的，且結束時仍會關掉所有 Android 模擬器；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，GitNRun 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」與共用的「釋放 port」，釋放時一併關閉綁定的模擬器。
+- Flutter 專案（只有 `pubspec.yaml`、沒有描述檔）可推測出三個服務：`flutter`（`flutter run -d chrome --web-port {port}`）、`flutter-ios`（先啟動並等待指定的 iOS 模擬器，再執行 Flutter）、`flutter-android`（先啟動指定的 AVD，解析其 ADB serial，再執行 `flutter run -d <serial>`）。iOS 模擬器每個專案可各自指定：在專案資料夾放 `.portpilot/ios-device`（一行 UDID，格式不符或不存在則用預設 `FLUTTER_IOS_DEVICE_ID`），兩個專案指定不同 UDID 即可同時各跑一台模擬器；釋放 port 時只關閉該服務綁定的那台（`simctl shutdown <UDID>`），指令裡找不到 UDID 時不關任何模擬器。Android 識別碼仍是常數 `FLUTTER_ANDROID_AVD_ID`，預設值是範例用的 AVD，使用者必須換成自己的，釋放時只關閉指令綁定的那台（比對 AVD 名稱或 emulator 序號），沒有綁定就不關；Android 不使用泛用的 `emulator` target。iOS 與 Android 模擬器是各自獨立的 desktop 服務，由使用者個別啟動，不會一起被帶起來；熱更新由 `flutter run` 所在的終端機自己處理，PortPilot 不提供熱更新按鈕。專案啟動頁把每個專案的 iOS、Android 服務合併成一列「mobile」，按鈕為「啟動 iOS」「啟動 Android」與共用的「釋放 port」，釋放時一併關閉綁定的模擬器。
 - 「啟動前後端」啟動所有 backend 與 frontend 服務。
 - frontend、desktop 服務隱含依賴同專案所有 backend，不必手寫 `needs`；啟動任一前端會連帶啟動後端，後端已在跑則沿用。同專案的啟動動作排隊執行，同時啟動多個前端時後端只啟動一次。
-- 專案與 App 的手動排序：存在 renderer 的 localStorage（`gitnrun.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`gitnrun.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。
-- Issue 區塊：每個專案卡顯示該 repo 的 GitHub issues，預設只列前 5 筆（`ISSUE_PREVIEW_COUNT`），可展開；頁面可見時每 60 秒更新一次。哪些分組略過 Issue 區塊由 `src/shared/git-lite.ts` 的略過分組表決定（以分組 id 指定，跟著分組表走）。使用者可關閉 Issue 顯示（`gitnrun.run.showIssues`），關閉時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。沒有 GitHub remote、載入中、失敗（可重試）各有對應狀態。
+- 專案與 App 的手動排序：存在 renderer 的 localStorage（`portpilot.run.order`），疊在 `run-groups.ts` 預設順序之上，只影響畫面順序、不影響啟動順序，不進備份；每個分組另有排序模式 `manual`／`issues`（`portpilot.run.sortMode`，依 Issue 數排序）。解析一律容錯，壞資料退回預設順序（`src/shared/run-order.ts`）。
+- Issue 區塊：每個專案卡顯示該 repo 的 GitHub issues，預設只列前 5 筆（`ISSUE_PREVIEW_COUNT`），可展開；頁面可見時每 60 秒更新一次。哪些分組略過 Issue 區塊由 `src/shared/git-lite.ts` 的略過分組表決定（以分組 id 指定，跟著分組表走）。使用者可關閉 Issue 顯示（`portpilot.run.showIssues`），關閉時只讀本機 git（變更檔案數照常），完全不呼叫 GitHub。沒有 GitHub remote、載入中、失敗（可重試）各有對應狀態。
 - Debug 密碼來源：專案設定可綁定專案環境檔裡的某個鍵，由 `src/main/run/passcode-source.ts` 讀取；只讀不寫、不保存，明文只在主程序經手，環境檔大小有上限（`MAX_PASSCODE_ENV_BYTES`）。
+- 重開 PortPilot 後識別仍在執行的服務：記憶體中的工作階段是空的，所以每個專案在本次執行第一次被操作時，依「描述檔固定 port，否則上次寫入的 `.dev/ports.json`」逐一即時探測，探測得到就認回為執行中，認不到當作沒在跑；每個專案只試一次。
+- 固定 port 的判斷只看「有沒有程序在監聽」，不驗證監聽者是不是該服務自己；因此固定 port 必須避開 PortPilot 自己 dev server 往上找空位的範圍（從 5173 起），也不能與其他專案重複，否則該服務會被誤判為已在執行而被略過。
+- 殘留程序偵測：桌面類服務常有單一實例鎖，舊程序留在背景會讓新的立即退出。啟動前掃描專案資料夾下還活著的開發程序（pid 一律由主程序掃出，不接受畫面傳入），列出後經使用者確認才結束；同專案已有 port 服務在跑時分不出哪些屬於誰，這時跳過，交給啟動後的「立即退出」偵測。
+- iOS 模擬器服務沒有 port，執行狀態改以「綁定的模擬器已開機且 `flutter run` 程序仍存在」判斷；啟動後會嘗試把該模擬器的視窗帶到前景（需要 macOS 輔助使用權限，失敗只記警告，不中止啟動）。開窗透過模擬器的 `File → Open Simulator` 選單，它是兩層選單（第一層是 iOS 版本，裝置在第二層）：先點裝置所屬版本的子選單，找不到再逐一搜尋所有版本；視窗剛建立時名稱可能讀不到，需略過；仍失敗時訊息附上選單內實際有的版本，方便判斷。
+- 釋放範圍規則：專案內的釋放動作只處理屬於該專案的程序。候選 port 取「工作階段、上次記錄、描述檔固定 port」的聯集，結束前逐一查出監聽者，只有「工作目錄在專案資料夾內、命令列含專案路徑，或其上層程序符合」的才結束；不屬於專案或查不到歸屬的一律略過，結果訊息列出略過的 port 與占用者，不算失敗。手機服務只關指令綁定的那一台模擬器（iOS 用 UDID，Android 用 AVD 名稱或 emulator 序號）；指令沒指定到哪一台（例如 `-d emulator`）就不關任何模擬器並說明。
 - 「停止」依目前記錄的 port 停止服務，成功後清掉該專案的執行狀態與 `.dev/ports.json` 內容。
 - 「開網頁」只在 frontend 已執行時開啟實際 `http://localhost:<port>`，不自動啟動服務。
 - 「開桌面」啟動 desktop 服務與它 `needs` 的服務。
@@ -161,14 +168,22 @@
 - 字串長度、服務數量、環境變數數量與輸出記錄都需要有上限。
 - 第一次執行，以及內容變更後第一次執行，必須跳出原生對話框列出所有指令；預設按鈕是「拒絕」。
 - 確認過的內容雜湊只存在本機，不進備份；還原備份後需重新確認。
-- 動態 port 在按下啟動按鈕當下向作業系統取得，避開固定 port 與留給手動啟動的 5173、5174（`MANUAL_START_PORTS`，`src/shared/reserved-ports.ts`），且同一批不得重複；GitNRun 自己的 dev server（`scripts/dev-port.ts`，讀環境變數 `PORT`，未指定從 5173 往後找）也撇除這兩個號碼；固定 port 依描述檔配置。重新啟動時沿用原設定，停止後清除執行記錄。
+- 動態 port 在按下啟動按鈕當下向作業系統取得，避開固定 port 與留給手動啟動的 5173、4310（`MANUAL_START_PORTS`，`src/shared/reserved-ports.ts`），且同一批不得重複；PortPilot 自己的 dev server（`scripts/dev-port.ts`，讀環境變數 `PORT`，未指定從 5173 往後找）也撇除這兩個號碼；固定 port 依描述檔配置。重新啟動時沿用原設定，停止後清除執行記錄。
 - 實際網址顯示在專案列，也寫入該專案 `.dev/ports.json` 作為當次提示；它不是穩定設定檔，使用前仍要確認服務存活。
 - 停止功能以目前記錄的 port 查找並終止監聽行程；若服務沒有可偵測 port，可能需要使用者在 iTerm2 分頁中手動停止。
+
+## 視窗與啟動體驗規格
+
+- 主視窗預設大小：寬 1180px、最小寬度 900px；高度為主螢幕邏輯高度的 70%（不低於最小高度 520px、不超過螢幕），讀不到螢幕資訊時用 720px。
+- 日誌列的時間與類別兩欄寬度隨視窗寬度（vw）調整並設下限，訊息欄吃剩下的空間，長訊息只在自己那欄換行，不擠壓前兩欄。
+- 關閉主視窗改為隱藏，不結束應用程式與核心行程；再次開啟時立即顯示，不必重新載入。其他視窗維持一般關閉。
+- 主視窗建立時先隱藏，等 renderer 首次繪製完成後經單一通道（`window:ready`）通知外殼才顯示，避免出現白畫面；若一直沒有通知（出錯或核心遲遲未就緒），外殼在 2 秒後備援顯示。該訊號只送一次，送失敗不影響畫面。
+- 專案概況快取：最近一次成功的專案概況存在 renderer 的 localStorage（`portpilot.runOverview`），開啟時先用快取畫出專案列表，再於背景向核心刷新並覆寫快取；快取不存在、格式損壞或讀寫失敗一律退回「載入中」，不影響功能，也不進備份。
 
 ## 連接埠掃描規格
 
 - 入口在設定頁；流程固定為「掃描 → 列出將結束的程序與 port → 使用者確認 → 結束」，未確認不動手。
-- 以 `lsof -iTCP -sTCP:LISTEN` 與 `ps` 解析；只納入同時符合「本人擁有、有控制終端機、不是 GitNRun 自己與其上下層程序」的程序。
+- 以 `lsof -iTCP -sTCP:LISTEN` 與 `ps` 解析；只納入同時符合「本人擁有、有控制終端機、不是 PortPilot 自己與其上下層程序」的程序。
 - 結束後回報已釋放與仍無法結束的程序；純函式與過濾規則在 `src/shared/port-sweep.ts`，執行在 `src/main/run/port-sweep.ts`。
 
 ## Webhook 規格

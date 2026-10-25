@@ -8,11 +8,14 @@ use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBui
 use crate::ipc::{dev_origin, is_trusted_origin};
 
 pub const MAIN_LABEL: &str = "main";
-/// 實測：Tauri 在 macOS 把高度當成含標題列的外框，網頁內容區會得到 1100×688，與 Electron 相同。
-const WIDTH: f64 = 1100.0;
-const HEIGHT: f64 = 720.0;
-const MIN_WIDTH: f64 = 820.0;
+/// 寬度比原本的 1100 / 820 各多 5rem（80px）；高度不寫死，預設取主螢幕高度的 70%（70vh）。
+/// 實測：Tauri 在 macOS 把高度當成含標題列的外框。
+const WIDTH: f64 = 1180.0;
+const MIN_WIDTH: f64 = 900.0;
 const MIN_HEIGHT: f64 = 520.0;
+/// 讀不到螢幕資訊時的預設高度。
+const FALLBACK_HEIGHT: f64 = 720.0;
+const HEIGHT_RATIO: f64 = 0.7;
 /// Electron 實測的標題是頁面 <title>；Tauri 不會跟著 document.title，所以明確指定。
 const TITLE: &str = "GitNRun";
 /// 前端外殼繪製完成後經 ipc_invoke 送來的通道；Rust 自己處理，不轉給核心。
@@ -30,11 +33,25 @@ pub fn is_navigation_allowed(url: &Url, dev: Option<&Url>) -> bool {
     is_trusted_origin(url, dev)
 }
 
+/// 預設視窗高度：螢幕邏輯高度的 70%，不低於最小高度、不超過螢幕；沒有螢幕資訊就用後備值。
+pub fn default_height(screen_height: Option<f64>) -> f64 {
+    match screen_height {
+        Some(screen) if screen.is_finite() && screen > 0.0 => (screen * HEIGHT_RATIO).max(MIN_HEIGHT).min(screen),
+        _ => FALLBACK_HEIGHT,
+    }
+}
+
+fn screen_height(app: &AppHandle) -> Option<f64> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    Some(monitor.size().height as f64 / monitor.scale_factor())
+}
+
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let dev = dev_origin(app);
+    let height = default_height(screen_height(app));
     let window = WebviewWindowBuilder::new(app, MAIN_LABEL, WebviewUrl::App("index.html".into()))
         .title(TITLE)
-        .inner_size(WIDTH, HEIGHT)
+        .inner_size(WIDTH, height)
         .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
         .visible(false)
         // 拖放檔案進視窗不處理（shim 也已攔截），避免整頁被導向檔案。
@@ -79,6 +96,15 @@ mod tests {
     fn only_the_main_window_is_hidden_on_close() {
         assert!(hides_instead_of_closing(MAIN_LABEL));
         assert!(!hides_instead_of_closing("other"));
+    }
+
+    #[test]
+    fn default_height_is_seventy_percent_of_the_screen_within_limits() {
+        assert_eq!(default_height(Some(1000.0)), 700.0);
+        assert_eq!(default_height(Some(600.0)), MIN_HEIGHT);
+        assert_eq!(default_height(Some(400.0)), 400.0);
+        assert_eq!(default_height(None), FALLBACK_HEIGHT);
+        assert_eq!(default_height(Some(f64::NAN)), FALLBACK_HEIGHT);
     }
 
     #[test]

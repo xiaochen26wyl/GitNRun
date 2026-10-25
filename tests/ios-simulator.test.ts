@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { bootedUdids, flutterRunsOnDevice, iosServiceAlive, deviceNameOf, iosUdidOfCommand, OPEN_SIMULATOR_WINDOW_SCRIPT } from "@shared/ios-simulator";
+import { bootedUdids, flutterRunsOnDevice, iosServiceAlive, deviceNameOf, iosUdidOfCommand, OPEN_SIMULATOR_WINDOW_SCRIPT, runtimeLabelOf, runtimeMenuLabel } from "@shared/ios-simulator";
 import { ensureSimulatorWindow, type ExecResult, type SimulatorExec } from "@main/run/simulator-window";
 
 const DEV = "498D038D-9A95-4CB5-967C-B846B0E93DE8";
@@ -48,6 +48,32 @@ const fakeExec = (handler: (file: string, args: string[]) => Partial<ExecResult>
   };
 };
 
+describe("開窗選單與腳本", () => {
+  it("runtime 名稱轉成選單上的版本文字（兩位與三位版本號）", () => {
+    assert.equal(runtimeMenuLabel("com.apple.CoreSimulator.SimRuntime.iOS-26-5"), "iOS 26.5");
+    assert.equal(runtimeMenuLabel("com.apple.CoreSimulator.SimRuntime.iOS-17-5"), "iOS 17.5");
+    assert.equal(runtimeMenuLabel("com.apple.CoreSimulator.SimRuntime.iOS-26-0-1"), "iOS 26.0.1");
+    assert.equal(runtimeMenuLabel("rt"), null);
+  });
+  it("同名裝置存在於不同版本時，取該 UDID 所屬的版本", () => {
+    const list = JSON.stringify({
+      devices: {
+        "com.apple.CoreSimulator.SimRuntime.iOS-17-5": [{ udid: "AAAAAAAA-0000-0000-0000-000000000000", name: "iPhone 15" }],
+        "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [{ udid: DEV, name: "iPhone 15" }]
+      }
+    });
+    assert.equal(runtimeLabelOf(list, DEV), "iOS 26.5");
+    assert.equal(runtimeLabelOf(list, "00000000-0000-0000-0000-000000000000"), null);
+    assert.equal(runtimeLabelOf("not json", DEV), null);
+  });
+  it("腳本走兩層選單（版本 → 裝置），並略過讀不到名稱的視窗", () => {
+    assert.match(OPEN_SIMULATOR_WINDOW_SCRIPT, /menu item deviceName of \(menu 1 of menu item runtimeLabel of openMenu\)/);
+    assert.match(OPEN_SIMULATOR_WINDOW_SCRIPT, /menu item deviceName of \(menu 1 of runtimeItem\)/);
+    assert.match(OPEN_SIMULATOR_WINDOW_SCRIPT, /try\n\s+if \(\(contents of windowName\) as text\)/);
+    assert.doesNotMatch(OPEN_SIMULATOR_WINDOW_SCRIPT, /repeat with windowName in \(name of every window\)/);
+  });
+});
+
 describe("ensureSimulatorWindow", () => {
   const noWait = async (): Promise<void> => undefined;
 
@@ -56,7 +82,7 @@ describe("ensureSimulatorWindow", () => {
     const result = await ensureSimulatorWindow(DEV2, exec, noWait);
     assert.equal(result.ok, true);
     const script = calls.find((call) => call[0]?.endsWith("osascript"));
-    assert.deepEqual(script, ["/usr/bin/osascript", "-e", OPEN_SIMULATOR_WINDOW_SCRIPT, "iPhone 17 dev2"]);
+    assert.deepEqual(script, ["/usr/bin/osascript", "-e", OPEN_SIMULATOR_WINDOW_SCRIPT, "iPhone 17 dev2", "iOS 26.5"]);
     assert.ok(!calls.some((call) => call.join(" ").includes("quit")), "不可關閉 Simulator");
   });
 
