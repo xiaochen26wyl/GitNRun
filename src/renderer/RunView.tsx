@@ -85,109 +85,6 @@ const ActionButton = ({
 
 type CopyState = "idle" | "copied" | "failed";
 
-/** 點下去就複製指令，並展開浮層讓人看到複製了什麼。 */
-const CommandButton = ({ command, label = "指令" }: { command: string; label?: string }) => {
-  const [open, setOpen] = useState(false);
-  const [copy, setCopy] = useState<CopyState>("idle");
-  const ref = useRef<HTMLSpanElement>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent): void => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const flash = (next: CopyState): void => {
-    setCopy(next);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopy("idle"), COPY_FLASH_MS);
-  };
-
-  const onClick = (): void => {
-    setOpen((value) => !value);
-    // 渲染層的瀏覽器剪貼簿權限被 session lockdown 一律拒絕，改走主程序的 IPC 寫入剪貼簿。
-    void window.gitNRun.copyText(command).then(
-      () => flash("copied"),
-      () => flash("failed")
-    );
-  };
-
-  return (
-    <span className="run-command-wrap" ref={ref}>
-      <button type="button" aria-expanded={open} onClick={onClick}>
-        {copy === "copied" ? "已複製" : copy === "failed" ? "複製失敗" : label}
-      </button>
-      {open ? <code className="run-command-pop mono">{command}</code> : null}
-    </span>
-  );
-};
-
-/** 多台裝置的指令收進一個選單：點「指令」展開，點某台就複製它的指令；點外面或按 Esc 關閉。 */
-const CommandMenu = ({ items }: { items: ReadonlyArray<{ key: string; label: string; command: string }> }) => {
-  const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState("");
-  const ref = useRef<HTMLSpanElement>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent): void => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const copy = (item: { key: string; command: string }): void => {
-    // 渲染層的瀏覽器剪貼簿權限被 session lockdown 一律拒絕，改走主程序的 IPC 寫入剪貼簿。
-    void window.gitNRun.copyText(item.command).then(
-      () => setCopied(item.key),
-      () => setCopied("")
-    );
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(""), COPY_FLASH_MS);
-  };
-
-  return (
-    <span className="run-command-wrap" ref={ref}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        指令 ▾
-      </button>
-      {open ? (
-        <span className="run-command-pop run-command-menu">
-          {items.map((item) => (
-            <button type="button" key={item.key} title={item.command} onClick={() => copy(item)}>
-              {copied === item.key ? "已複製" : `複製 ${item.label} 指令`}
-            </button>
-          ))}
-        </span>
-      ) : null}
-    </span>
-  );
-};
-
 /**
  * 專案路徑不直接攤在卡片上，點一下複製即可；結果用按鈕文字短暫提示，不展開浮層。
  * missing 為真時路徑在磁碟上已找不到（上次新增／編輯時檢查的結果），但仍允許複製——
@@ -258,7 +155,6 @@ const ServiceRow = ({
         <ActionButton label={startLabel(service)} state={service.buttons.start} busy={busy(startAction)} onClick={() => onAction(startAction)} />
         {service.role === "frontend" ? <ActionButton label="開網頁" state={service.buttons.web} busy={busy(webAction)} onClick={() => onAction(webAction)} /> : null}
         <ActionButton label="釋放 port" state={service.buttons.release} busy={busy(releaseAction)} onClick={() => onAction(releaseAction)} />
-        <CommandButton command={service.command} />
       </div>
     </li>
   );
@@ -299,7 +195,6 @@ const MobileRow = ({
           {releaseActions[0] !== undefined ? (
             <ActionButton label="釋放 port" state={groupButtonState(entries.map((entry) => entry.service), "release")} busy={busy(releaseActions[0])} onClick={() => onAction(releaseActions)} />
           ) : null}
-          <CommandMenu items={entries.map(({ platform, variant, service }) => ({ key: service.name, label: mobileDeviceLabel(platform, variant), command: service.command }))} />
         </div>
         <div className="run-devices">
           {entries.map(({ platform, variant, service }) => {
@@ -345,9 +240,6 @@ const MobileRow = ({
         {releaseActions[0] !== undefined ? (
           <ActionButton label="釋放 port" state={groupButtonState(entries.map((entry) => entry.service), "release")} busy={busy(releaseActions[0])} onClick={() => onAction(releaseActions)} />
         ) : null}
-        {entries.map(({ platform, service }) => (
-          <CommandButton key={service.name} command={service.command} label={`${PLATFORM_LABEL[platform]} 指令`} />
-        ))}
       </div>
     </li>
   );
@@ -395,8 +287,7 @@ const BackendRow = ({
             {service.url ? <span className="mono">{service.url}</span> : null}
             {!service.url && service.fixedPort !== null ? <span className="mono muted">固定 http://localhost:{service.fixedPort}</span> : null}
             {service.exitedEarly ? <span className="warn">啟動後立即退出</span> : null}
-            <CommandButton command={service.command} />
-          </li>
+              </li>
         ))}
       </ul>
     </li>

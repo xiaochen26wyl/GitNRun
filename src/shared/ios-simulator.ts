@@ -5,6 +5,9 @@
  * 關掉再重開會連帶關掉原本那台，所以改成點選單開視窗，不影響已開著的裝置。
  */
 
+import { protectedPids } from "@shared/port-sweep";
+import type { StaleProcess, StaleProcessRow } from "@shared/stale-process";
+
 const UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
 const UDID_IN_TEXT = /\b[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\b/i;
 
@@ -123,3 +126,25 @@ export const flutterRunsOnDevice = (psOutput: string, udid: string): boolean => 
 /** iOS 服務是否還在執行：模擬器已開機，且有 flutter run 綁著它；只有模擬器開著不算。 */
 export const iosServiceAlive = (input: { simctlJson: string; psOutput: string; udid: string }): boolean =>
   bootedUdids(input.simctlJson).has(input.udid.toUpperCase()) && flutterRunsOnDevice(input.psOutput, input.udid);
+
+/** 綁在指定模擬器上的 `flutter run` 程序（本人、非 GitNRun 自己與上下層）；只靠命令列裡的 UDID 認，不看專案路徑。 */
+export const selectFlutterRunsOnDevices = (input: {
+  rows: readonly StaleProcessRow[];
+  udids: readonly string[];
+  uid: number;
+  selfPid: number;
+}): StaleProcess[] => {
+  const targets = input.udids.map((udid) => udid.toUpperCase());
+  const skip = protectedPids(input.rows, input.selfPid);
+  return input.rows
+    .filter(
+      (row) =>
+        row.uid === input.uid &&
+        row.pid > 1 &&
+        !skip.has(row.pid) &&
+        FLUTTER_RUN.test(row.command) &&
+        targets.some((udid) => row.command.toUpperCase().includes(udid))
+    )
+    .map(({ pid, ppid, elapsed, command }) => ({ pid, ppid, elapsed, command }))
+    .sort((a, b) => a.pid - b.pid);
+};

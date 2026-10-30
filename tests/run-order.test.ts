@@ -49,7 +49,7 @@ describe("run order storage", () => {
 
   it("drops only the broken lists and keeps the rest", () => {
     const stored = JSON.stringify({
-      targets: { saas: ["a", "b"], creator: "oops", personal: ["x", 3] },
+      targets: { saas: ["a", "b"], someday: "oops", personal: ["x", 3] },
       services: { fictionpurr: ["api", "", "web"], gitnrun: ["a", "a", "b"] }
     });
     assert.deepEqual(parseRunOrder(stored), { targets: { saas: ["a", "b"] }, services: { gitnrun: ["a", "b"] } });
@@ -115,7 +115,7 @@ describe("ordered targets and service rows", () => {
   });
 
   it("only applies a group's saved order to that group", () => {
-    const order: RunOrder = { targets: { creator: ["translationservice"] }, services: {} };
+    const order: RunOrder = { targets: { someday: ["translationservice"] }, services: {} };
     assert.deepEqual(idsOf(orderedRunTargets(saas, "saas", order)), ["p:stockPaw", "p:toBloom", "p:xiaochenStudio"]);
   });
 
@@ -174,11 +174,11 @@ describe("order entries and committing", () => {
   it("drops lists that match the default again and leaves other groups alone", () => {
     const defaults = buildRunOrderEntries(targets, "saas", EMPTY_RUN_ORDER);
     const before: RunOrder = {
-      targets: { saas: ["tobloom"], creator: ["fictionpurr"] },
+      targets: { saas: ["tobloom"], someday: ["fictionpurr"] },
       services: { tobloom: ["web", "api"], gitnrun: ["a", "b"] }
     };
     const after = commitRunOrder(before, "saas", defaults, defaults);
-    assert.deepEqual(after, { targets: { creator: ["fictionpurr"] }, services: { gitnrun: ["a", "b"] } });
+    assert.deepEqual(after, { targets: { someday: ["fictionpurr"] }, services: { gitnrun: ["a", "b"] } });
   });
 
   it("does not change the order it was given", () => {
@@ -215,17 +215,17 @@ describe("committing only the app order", () => {
 describe("sort modes", () => {
   it("defaults every tab to manual", () => {
     assert.equal(runSortModeOf(EMPTY_RUN_SORT_MODES, "saas"), "manual");
-    assert.equal(runSortModeOf(withRunSortMode(EMPTY_RUN_SORT_MODES, "saas", "issues"), "creator"), "manual");
+    assert.equal(runSortModeOf(withRunSortMode(EMPTY_RUN_SORT_MODES, "saas", "issues"), "someday"), "manual");
   });
 
   it("remembers the mode per tab and drops the record when going back to manual", () => {
-    const issues = withRunSortMode(withRunSortMode(EMPTY_RUN_SORT_MODES, "saas", "issues"), "creator", "issues");
+    const issues = withRunSortMode(withRunSortMode(EMPTY_RUN_SORT_MODES, "saas", "issues"), "someday", "issues");
     assert.equal(runSortModeOf(issues, "saas"), "issues");
-    assert.equal(runSortModeOf(issues, "creator"), "issues");
+    assert.equal(runSortModeOf(issues, "someday"), "issues");
     const back = withRunSortMode(issues, "saas", "manual");
     assert.equal(runSortModeOf(back, "saas"), "manual");
-    assert.deepEqual(back, { creator: "issues" });
-    assert.deepEqual(withRunSortMode(back, "creator", "manual"), {});
+    assert.deepEqual(back, { someday: "issues" });
+    assert.deepEqual(withRunSortMode(back, "someday", "manual"), {});
   });
 
   it("round-trips through storage and ignores anything that is not a valid record", () => {
@@ -234,7 +234,7 @@ describe("sort modes", () => {
     for (const stored of [null, undefined, "", "not json", "[]", "null", "7"]) {
       assert.deepEqual(parseRunSortModes(stored), EMPTY_RUN_SORT_MODES, String(stored));
     }
-    assert.deepEqual(parseRunSortModes('{"saas":"issues","creator":"manual","personal":1,"x":null}'), { saas: "issues" });
+    assert.deepEqual(parseRunSortModes('{"saas":"issues","someday":"manual","personal":1,"x":null}'), { saas: "issues" });
   });
 
   it("is not confused by a tab id named like an object property", () => {

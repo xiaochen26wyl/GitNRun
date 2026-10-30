@@ -352,13 +352,14 @@ const ROLE_RANK: Record<RunRole, number> = { backend: 0, frontend: 1, desktop: 2
 /** backend：只選同專案所有後端（後端群組列的整組動作），不連帶前端與桌面版。 */
 export type RunStartSelection = "all" | "desktop" | "backend" | { service: string };
 
+/** 前端與桌面版一律隱含依賴同專案的所有後端，不必在描述檔手寫 needs。 */
+const depsOfService = (manifest: RunManifest, service: RunServiceSpec): string[] =>
+  service.role === "backend" ? service.needs : [...new Set([...service.needs, ...manifest.services.filter((item) => item.role === "backend").map((item) => item.name)])];
+
 /** 動作要啟動的服務（含前置服務），後端在前、前端其次、桌面最後，前置服務一定排在依賴它的服務之前。 */
 export const selectServices = (manifest: RunManifest, selection: RunStartSelection): RunServiceSpec[] => {
   const byName = new Map(manifest.services.map((service) => [service.name, service]));
-  const backends = manifest.services.filter((service) => service.role === "backend").map((service) => service.name);
-  // 前端與桌面版一律隱含依賴同專案的所有後端，不必在描述檔手寫 needs。
-  const depsOf = (service: RunServiceSpec): string[] =>
-    service.role === "backend" ? service.needs : [...new Set([...service.needs, ...backends])];
+  const depsOf = (service: RunServiceSpec): string[] => depsOfService(manifest, service);
   const wanted = new Set<string>();
   const add = (name: string): void => {
     if (wanted.has(name)) return;
@@ -407,7 +408,21 @@ export interface RunStartItem {
   cwd: string;
   commandLine: string;
   port: number | null;
+  /** 啟動前要先等到監聽的 port：它依賴的、有 port 的服務。 */
+  waitPorts: number[];
 }
+
+/** 等待 port 的最長秒數；逾時仍照常執行，避免相依服務永遠卡住。 */
+export const PORT_WAIT_SECONDS = 180;
+
+/** 在指令前加上「等被依賴的 port 開始監聽」；沒有要等的 port 時原樣回傳。 */
+export const withPortWait = (commandLine: string, waitPorts: readonly number[]): string => {
+  if (waitPorts.length === 0) return commandLine;
+  const waits = waitPorts
+    .map((port) => `n=0; until nc -z localhost ${port} 2>/dev/null || [ $n -ge ${PORT_WAIT_SECONDS} ]; do n=$((n+1)); sleep 1; done`)
+    .join("; ");
+  return `echo '[GitNRun] 等待 port ${waitPorts.join("、")} 就緒...'; ${waits}; ${commandLine}`;
+};
 
 export interface RunStartPlan {
   /** 整份描述檔所有需要 port 的服務的配置（沿用的與新配的）。 */
@@ -444,7 +459,8 @@ export const planStart = (
     .map((service): RunStartItem => {
       const command = service.command.map((arg) => expandPlaceholders(arg, service.name, ports));
       const env = Object.fromEntries(Object.entries(service.env).map(([key, value]) => [key, expandPlaceholders(value, service.name, ports)]));
-      return { name: service.name, role: service.role, cwd: service.cwd, commandLine: buildCommandLine(command, env), port: ports[service.name] ?? null };
+      const waitPorts = [...new Set(depsOfService(manifest, service).map((dep) => ports[dep]).filter((port): port is number => port !== undefined))];
+      return { name: service.name, role: service.role, cwd: service.cwd, commandLine: buildCommandLine(command, env), port: ports[service.name] ?? null, waitPorts };
     });
 
   return { ports, starts };

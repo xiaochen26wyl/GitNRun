@@ -34,7 +34,10 @@ export const listSettings = (db: Db): Array<{ key: string; value: unknown }> =>
     });
 
 export const SETTING_KEYS = {
-  retentionDays: "retention.days"
+  retentionDays: "retention.days",
+  runOrder: "view.runOrder",
+  runSortModes: "view.runSortModes",
+  tabNames: "view.tabNames"
 } as const;
 
 export const DEFAULT_RETENTION_DAYS = 30;

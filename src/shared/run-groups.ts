@@ -2,7 +2,7 @@
 
 import type { RunServiceRow } from "@shared/run";
 
-export type RunGroupId = "open-source" | "saas" | "creator" | "someday" | "other";
+export type RunGroupId = "open-source" | "saas" |"someday" | "other";
 
 export interface RunGroup {
   id: RunGroupId;
@@ -14,8 +14,11 @@ export interface RunGroup {
 /** 頁籤順序即陣列順序；每組的 folders 順序就是該頁籤內專案的顯示順序。改分組與排序只需要改這裡。 */
 export const RUN_GROUPS: readonly RunGroup[] = [
   { id: "open-source", label: "Free", folders: ["Usage-Pulse", "GitNRun", "socialHub"] },
-  { id: "saas", label: "SAAS", folders: ["stockPaw", "toBloom", "xiaochenStudio"] },
-  { id: "creator", label: "創作者宇宙", folders: ["fictionPurr", "translationService", "MahoPurr-Catalyst"] },
+  {
+    id: "saas",
+    label: "SAAS",
+    folders: ["stockPaw", "toBloom", "xiaochenStudio", "paw-scout", "fictionPurr", "translationService", "MahoPurr-Catalyst"]
+  },
   { id: "someday", label: "遊戲需要美術", folders: ["yumeAegis"] }
 ];
 
@@ -24,6 +27,30 @@ export const RUN_OTHER_GROUP: RunGroup = { id: "other", label: "其他", folders
 
 /** 開啟 app 時先停在哪個頁籤：目前的開發主力在 SAAS。 */
 export const DEFAULT_RUN_GROUP_ID: RunGroupId = "saas";
+
+/** 頁籤自訂名稱的長度上限。 */
+export const MAX_TAB_NAME_CHARS = 20;
+
+/** 可以改名的分組 id（不含自動出現的「其他」）。 */
+export const isRenamableGroupId = (id: string): boolean => RUN_GROUPS.some((group) => group.id === id);
+
+/** 整理已存的頁籤名稱：只留可改名分組的非空字串，去頭尾空白並截到長度上限；其餘一律忽略。 */
+export const cleanTabNames = (raw: unknown): Record<string, string> => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const names: Record<string, string> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isRenamableGroupId(id) || typeof value !== "string") continue;
+    const name = Array.from(value.trim()).slice(0, MAX_TAB_NAME_CHARS).join("");
+    if (name !== "") names[id] = name;
+  }
+  return names;
+};
+
+/** 頁籤顯示名稱：自訂名稱優先，沒有就用分組表的預設名稱。 */
+export const tabLabelOf = (group: RunGroup, tabNames: Readonly<Record<string, string>>): string => {
+  const custom = Object.hasOwn(tabNames, group.id) ? tabNames[group.id]?.trim() : "";
+  return custom !== undefined && custom !== "" ? custom : group.label;
+};
 
 const GROUP_OF_FOLDER_NAME: ReadonlyMap<string, RunGroupId> = new Map(
   RUN_GROUPS.flatMap((group) => group.folders.map((name): [string, RunGroupId] => [name.toLowerCase(), group.id]))

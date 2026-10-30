@@ -14,7 +14,8 @@ import {
   type PasscodeBinding,
   type RunAction,
   type RunManifest,
-  type RunServiceActionName
+  type RunServiceActionName,
+  withPortWait
 } from "@shared/run";
 import { addProject } from "@main/db/projects-repo";
 import { UserFacingError } from "@main/errors";
@@ -450,7 +451,7 @@ describe("run handlers: one-click start", () => {
     const target = `p:${project.id}`;
     ok(await h.handlers.run(target, serviceAction("web", "start")));
     assert.equal(h.launched[0]?.[0]?.command, "env PORT=5174 pnpm dev");
-    assert.equal(h.launched[0]?.[1]?.command, "env PORT=41001 API=http://localhost:5174 pnpm dev");
+    assert.equal(h.launched[0]?.[1]?.command, withPortWait("env PORT=41001 API=http://localhost:5174 pnpm dev", [5174]));
     assert.equal((await h.handlers.overview()).targets[0]?.services[0]?.fixedPort, 5174);
   });
 
@@ -473,7 +474,7 @@ describe("run handlers: one-click start", () => {
     assert.equal(h.launched.length, 1);
     assert.deepEqual(h.launched[0]?.map((tab) => [tab.name, tab.dir]), [["gitnrun p:1 api", "/work/app/api"], ["gitnrun p:1 web", "/work/app"]]);
     assert.equal(h.launched[0]?.[0]?.command, "env DEV_PORT=41001 FRONT=http://localhost:41002 pnpm dev");
-    assert.equal(h.launched[0]?.[1]?.command, "env PORT=41002 API=http://localhost:41001 pnpm dev");
+    assert.equal(h.launched[0]?.[1]?.command, withPortWait("env PORT=41002 API=http://localhost:41001 pnpm dev", [41001]));
     assert.deepEqual(h.written[0]?.services, { api: { role: "backend", port: 41001 }, web: { role: "frontend", port: 41002 } });
     assert.ok(h.logs.some((line) => line.includes("已在 iTerm2 啟動")));
   });
@@ -850,7 +851,7 @@ describe("run handlers: one-click start", () => {
     ok(await h.handlers.run(`p:${project.id}`, serviceAction("sparkpurr", "start")));
 
     assert.deepEqual(h.launched[0]?.map((tab) => tab.name), ["gitnrun p:1 api", "gitnrun p:1 sparkpurr"]);
-    assert.equal(h.launched[0]?.[1]?.command, "env PORT=41003 API=http://localhost:41001 pnpm dev:spark");
+    assert.equal(h.launched[0]?.[1]?.command, withPortWait("env PORT=41003 API=http://localhost:41001 pnpm dev:spark", [41001]));
     assert.deepEqual(h.written[0]?.services, { api: { role: "backend", port: 41001 }, sparkpurr: { role: "frontend", port: 41003 } });
   });
 
@@ -865,7 +866,8 @@ describe("run handlers: one-click start", () => {
     assert.equal(h.launched.length, 2);
     assert.deepEqual(h.launched[1]?.map((tab) => tab.name), ["gitnrun p:1 web"]);
     // 第一次配置時三個有 port 的服務各拿一個（41001～41003）；第二次只有 web、panel 需要新的。
-    assert.equal(h.launched[1]?.[0]?.command, "env PORT=41004 API=http://localhost:41001 pnpm dev");
+    // web 依賴 api，所以前面多一段「等 41001 就緒」；api 已在監聽，等待會立刻結束。
+    assert.equal(h.launched[1]?.[0]?.command, withPortWait("env PORT=41004 API=http://localhost:41001 pnpm dev", [41001]));
   });
 
   it("the desktop action starts its needed service and reuses one that is already running", async () => {

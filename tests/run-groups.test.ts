@@ -7,22 +7,26 @@ import {
   orderRunServiceRows,
   runGroupById,
   runGroupIdOf,
-  targetsOfRunGroup
+  targetsOfRunGroup,
+  cleanTabNames,
+  tabLabelOf,
+  MAX_TAB_NAME_CHARS
 } from "@shared/run-groups";
 import { groupRunServices } from "@shared/run";
 
 const ROOT = "/Users/zorawl/Documents/GitHub";
 
 describe("run groups", () => {
-  it("places each of the ten project folders in its assigned group", () => {
+  it("places each of the project folders in its assigned group", () => {
     const expected: Array<[string, string]> = [
       ["Usage-Pulse", "Free"],
       ["stockPaw", "SAAS"],
       ["toBloom", "SAAS"],
       ["xiaochenStudio", "SAAS"],
-      ["MahoPurr-Catalyst", "創作者宇宙"],
-      ["fictionPurr", "創作者宇宙"],
-      ["translationService", "創作者宇宙"],
+      ["MahoPurr-Catalyst", "SAAS"],
+      ["paw-scout", "SAAS"],
+      ["fictionPurr", "SAAS"],
+      ["translationService", "SAAS"],
       ["GitNRun", "Free"],
       ["socialHub", "Free"],
       ["yumeAegis", "遊戲需要美術"]
@@ -82,7 +86,7 @@ describe("run groups", () => {
       { id: "b", folder: `${ROOT}/translationservice/` },
       { id: "c", folder: `${ROOT}/FICTIONPURR` }
     ];
-    assert.deepEqual(targetsOfRunGroup(targets, "creator").map((target) => target.id), ["c", "b", "a"]);
+    assert.deepEqual(targetsOfRunGroup(targets, "saas").map((target) => target.id), ["c", "b", "a"]);
     assert.deepEqual(targets.map((target) => target.id), ["a", "b", "c"]);
   });
 
@@ -146,5 +150,25 @@ describe("run service order", () => {
     const fiction = rowsOf("web-sparkpurr", "api");
     orderRunServiceRows(`${ROOT}/fictionPurr`, fiction);
     assert.deepEqual(keysOf(fiction), ["web-sparkpurr", "api"]);
+  });
+});
+
+describe("tab names", () => {
+  const saas = runGroupById("saas");
+
+  it("prefers the custom name and falls back to the default when it is missing or blank", () => {
+    assert.equal(tabLabelOf(saas, { saas: "主力" }), "主力");
+    assert.equal(tabLabelOf(saas, {}), "SAAS");
+    assert.equal(tabLabelOf(saas, { saas: "   " }), "SAAS");
+  });
+
+  it("cleans stored names: trims, truncates, ignores unknown groups and non-strings", () => {
+    const long = "字".repeat(MAX_TAB_NAME_CHARS + 5);
+    assert.deepEqual(cleanTabNames({ saas: " a ", other: "x", nope: "y", someday: 3, "open-source": long }), {
+      saas: "a",
+      "open-source": "字".repeat(MAX_TAB_NAME_CHARS)
+    });
+    assert.deepEqual(cleanTabNames(null), {});
+    assert.deepEqual(cleanTabNames([]), {});
   });
 });

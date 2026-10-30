@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { bootedUdids, flutterRunsOnDevice, iosServiceAlive, deviceNameOf, iosUdidOfCommand, OPEN_SIMULATOR_WINDOW_SCRIPT, runtimeLabelOf, runtimeMenuLabel } from "@shared/ios-simulator";
+import { bootedUdids, flutterRunsOnDevice, iosServiceAlive, deviceNameOf, iosUdidOfCommand, selectFlutterRunsOnDevices, OPEN_SIMULATOR_WINDOW_SCRIPT, runtimeLabelOf, runtimeMenuLabel } from "@shared/ios-simulator";
 import { ensureSimulatorWindow, type ExecResult, type SimulatorExec } from "@main/run/simulator-window";
 
 const DEV = "498D038D-9A95-4CB5-967C-B846B0E93DE8";
@@ -139,5 +139,27 @@ describe("iosServiceAlive", () => {
   it("flutter run 綁的是另一台，或該台沒開機 → 不算執行中", () => {
     assert.equal(flutterRunsOnDevice(ps(DEV), DEV2), false);
     assert.equal(iosServiceAlive({ simctlJson: booted(DEV), psOutput: ps(DEV2), udid: DEV2 }), false);
+  });
+});
+
+describe("flutter run on a simulator", () => {
+  const row = (pid: number, command: string, uid = 501, ppid = 1) => ({ pid, ppid, uid, tty: "ttys001", elapsed: "01:00", command });
+  const rows = [
+    row(10, `flutter run -d ${DEV}`),
+    row(11, `/x/flutter_tools.snapshot run -d ${DEV.toLowerCase()}`),
+    row(12, `flutter run -d ${DEV2}`),
+    row(13, `flutter run -d ${DEV}`, 0),
+    row(14, `vim notes ${DEV}`)
+  ];
+
+  it("picks only the user's own flutter run processes bound to the given device, case-insensitively", () => {
+    const found = selectFlutterRunsOnDevices({ rows, udids: [DEV], uid: 501, selfPid: 999 });
+    assert.deepEqual(found.map((item) => item.pid), [10, 11]);
+    assert.deepEqual(selectFlutterRunsOnDevices({ rows, udids: [], uid: 501, selfPid: 999 }), []);
+  });
+
+  it("never picks GitNRun itself or its parents", () => {
+    const withSelf = [row(20, `flutter run -d ${DEV}`, 501, 1), row(21, "gitnrun", 501, 20)];
+    assert.deepEqual(selectFlutterRunsOnDevices({ rows: withSelf, udids: [DEV], uid: 501, selfPid: 21 }), []);
   });
 });

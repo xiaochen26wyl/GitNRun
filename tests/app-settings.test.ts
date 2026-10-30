@@ -33,14 +33,35 @@ const setup = () => {
 
 describe("general settings", () => {
   it("start with sensible defaults", () => {
-    assert.deepEqual(setup().handlers.get(), { retentionDays: 30 });
+    assert.deepEqual(setup().handlers.get(), { retentionDays: 30, runOrder: null, runSortModes: null, tabNames: {} });
   });
 
   it("save and read back each setting, scheduling a backup", () => {
     const t = setup();
     const saved = t.handlers.save({ retentionDays: 90 });
-    assert.deepEqual(saved, { retentionDays: 90 });
+    assert.equal(saved.retentionDays, 90);
     assert.equal(t.calls.changed, 1);
+  });
+
+  it("stores the run order, sort modes and tab names, and a retention-only save leaves them alone", () => {
+    const t = setup();
+    t.handlers.save({ runOrder: '{"targets":{}}', runSortModes: '{"saas":"issues"}', tabNames: { saas: "  主力  ", someday: "" } });
+    t.handlers.save({ retentionDays: 7 });
+    assert.deepEqual(t.handlers.get(), { retentionDays: 7, runOrder: '{"targets":{}}', runSortModes: '{"saas":"issues"}', tabNames: { saas: "主力" } });
+    t.handlers.save({ tabNames: {}, runOrder: null });
+    assert.deepEqual([t.handlers.get().tabNames, t.handlers.get().runOrder], [{}, null]);
+  });
+
+  it("rejects bad tab names and order text without applying any of the batch", () => {
+    const t = setup();
+    for (const bad of [
+      { tabNames: { nope: "x" } }, { tabNames: { saas: 1 as never } }, { tabNames: { saas: "字".repeat(21) } },
+      { tabNames: [] as never }, { runOrder: 5 as never }, { retentionDays: 7, runSortModes: "x".repeat(100_001) }
+    ]) {
+      assert.throws(() => t.handlers.save(bad), UserFacingError, JSON.stringify(bad).slice(0, 60));
+    }
+    assert.equal(t.handlers.get().retentionDays, 30);
+    assert.equal(t.calls.changed, 0);
   });
 
   it("reports data usage for the three retained categories", () => {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { RunGroupId } from "@shared/run-groups";
 import {
   moveItem,
@@ -12,55 +12,24 @@ import {
   type RunSortMode,
   type RunSortModes
 } from "@shared/run-order";
+import { useViewPrefs } from "./ViewPrefsContext";
 
-const ORDER_PREF_KEY = "gitnrun.run.order";
-const SORT_MODE_PREF_KEY = "gitnrun.run.sortMode";
-
-/** 專案與 App 的手動排序：只是這台機器上的檢視設定，存在 localStorage；讀寫失敗就用預設順序。 */
+/** 專案與 App 的手動排序：存在核心資料庫（見 ViewPrefsContext），Dev 重啟後仍在；壞資料回退預設順序。 */
 export const useRunOrderPref = (): [RunOrder, (next: RunOrder) => void] => {
-  const [order, setOrder] = useState<RunOrder>(() => {
-    try {
-      return parseRunOrder(localStorage.getItem(ORDER_PREF_KEY));
-    } catch {
-      return parseRunOrder(null);
-    }
-  });
-
-  const update = useCallback((next: RunOrder) => {
-    setOrder(next);
-    try {
-      localStorage.setItem(ORDER_PREF_KEY, serializeRunOrder(next));
-    } catch {
-      // 寫不進去就只在這次執行期間生效。
-    }
-  }, []);
-
+  const { runOrder, save } = useViewPrefs();
+  const order = useMemo(() => parseRunOrder(runOrder), [runOrder]);
+  const update = useCallback((next: RunOrder) => save({ runOrder: serializeRunOrder(next) }), [save]);
   return [order, update];
 };
 
-/** 每個頁籤各自記住「手動」或「issue 數量」排序；沒選過的頁籤是手動。讀寫失敗就只在這次執行期間生效。 */
+/** 每個頁籤各自記住「手動」或「issue 數量」排序；沒選過的頁籤是手動。 */
 export const useRunSortModePref = (): [RunSortModes, (groupId: RunGroupId, mode: RunSortMode) => void] => {
-  const [modes, setModes] = useState<RunSortModes>(() => {
-    try {
-      return parseRunSortModes(localStorage.getItem(SORT_MODE_PREF_KEY));
-    } catch {
-      return parseRunSortModes(null);
-    }
-  });
-
+  const { runSortModes, save } = useViewPrefs();
+  const modes = useMemo(() => parseRunSortModes(runSortModes), [runSortModes]);
   const update = useCallback(
-    (groupId: RunGroupId, mode: RunSortMode) => {
-      const next = withRunSortMode(modes, groupId, mode);
-      setModes(next);
-      try {
-        localStorage.setItem(SORT_MODE_PREF_KEY, serializeRunSortModes(next));
-      } catch {
-        // 寫不進去就只在這次執行期間生效。
-      }
-    },
-    [modes]
+    (groupId: RunGroupId, mode: RunSortMode) => save({ runSortModes: serializeRunSortModes(withRunSortMode(modes, groupId, mode)) }),
+    [modes, save]
   );
-
   return [modes, update];
 };
 

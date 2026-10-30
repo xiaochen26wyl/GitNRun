@@ -1,6 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { AppSettings, AppSettingsPatch, BackupOverview, DataUsage, RestoreSummary } from "@shared/app-settings";
+import { MAX_VIEW_PREF_CHARS, type AppSettings, type AppSettingsPatch, type BackupOverview, type DataUsage, type RestoreSummary } from "@shared/app-settings";
+import { MAX_TAB_NAME_CHARS, cleanTabNames, isRenamableGroupId } from "@shared/run-groups";
 import { nextBackupAt } from "@main/backup-schedule";
 import { BACKUP_KEEP, deleteBackups, exportConfig, importConfig, listBackups, readBackupFile, writeBackup } from "@main/db/backup";
 import { readDataUsage } from "@main/db/data-usage";
@@ -37,9 +38,35 @@ export const createAppSettingsHandlers = (deps: AppSettingsDeps): AppSettingsHan
 
   const current = (): AppSettings => {
     const retention = getSetting<unknown>(db, SETTING_KEYS.retentionDays, DEFAULT_RETENTION_DAYS);
-    return {
-      retentionDays: retention === null ? null : typeof retention === "number" && Number.isFinite(retention) ? retention : DEFAULT_RETENTION_DAYS
+    const text = (key: string): string | null => {
+      const value = getSetting<unknown>(db, key, null);
+      return typeof value === "string" ? value : null;
     };
+    return {
+      retentionDays: retention === null ? null : typeof retention === "number" && Number.isFinite(retention) ? retention : DEFAULT_RETENTION_DAYS,
+      runOrder: text(SETTING_KEYS.runOrder),
+      runSortModes: text(SETTING_KEYS.runSortModes),
+      tabNames: cleanTabNames(getSetting<unknown>(db, SETTING_KEYS.tabNames, {}))
+    };
+  };
+
+  /** 頁籤名稱：未知分組、非字串、超過長度上限都拒絕；空白名稱代表還原預設，不存。 */
+  const validTabNames = (raw: unknown): Record<string, string> => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new UserFacingError("頁籤名稱格式不正確");
+    const names: Record<string, string> = {};
+    for (const [id, value] of Object.entries(raw)) {
+      if (!isRenamableGroupId(id) || typeof value !== "string") throw new UserFacingError("頁籤名稱格式不正確");
+      const name = value.trim();
+      if (Array.from(name).length > MAX_TAB_NAME_CHARS) throw new UserFacingError(`頁籤名稱最多 ${MAX_TAB_NAME_CHARS} 字`);
+      if (name !== "") names[id] = name;
+    }
+    return names;
+  };
+
+  const validViewText = (value: unknown): string | null => {
+    if (value === null) return null;
+    if (typeof value !== "string" || value.length > MAX_VIEW_PREF_CHARS) throw new UserFacingError("排序設定格式不正確");
+    return value;
   };
 
   return {
@@ -54,7 +81,14 @@ export const createAppSettingsHandlers = (deps: AppSettingsDeps): AppSettingsHan
         }
       }
 
+      const tabNames = patch.tabNames === undefined ? undefined : validTabNames(patch.tabNames);
+      const runOrder = patch.runOrder === undefined ? undefined : validViewText(patch.runOrder);
+      const runSortModes = patch.runSortModes === undefined ? undefined : validViewText(patch.runSortModes);
+
       if (patch.retentionDays !== undefined) setSetting(db, SETTING_KEYS.retentionDays, patch.retentionDays);
+      if (tabNames !== undefined) setSetting(db, SETTING_KEYS.tabNames, tabNames);
+      if (runOrder !== undefined) setSetting(db, SETTING_KEYS.runOrder, runOrder);
+      if (runSortModes !== undefined) setSetting(db, SETTING_KEYS.runSortModes, runSortModes);
 
       deps.onConfigChanged();
       return current();

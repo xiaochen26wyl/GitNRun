@@ -153,6 +153,12 @@ select {
   color: inherit;
 }
 
+.tabs .tab-rename {
+  font-size: 16px;
+  min-width: 4em;
+  max-width: 14em;
+}
+
 .tabs button.active {
   border-color: var(--accent);
   background: var(--accent);
@@ -710,30 +716,6 @@ select {
   align-items: center;
   min-width: 112px;
   justify-content: center;
-}
-.run-command-menu {
-  display: grid;
-  gap: 6px;
-}
-.run-command-wrap {
-  position: relative;
-}
-.run-command-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 10;
-  width: max-content;
-  max-width: min(480px, 80vw);
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: Canvas;
-  color: CanvasText;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-  font-size: 14px;
-  word-break: break-all;
-  user-select: text;
 }
 .run-service-actions {
   justify-content: flex-end;

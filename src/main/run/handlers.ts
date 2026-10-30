@@ -32,7 +32,8 @@ import {
   type RunServiceState,
   type RunServiceView,
   type RunStartSelection,
-  type RunTargetView
+  type RunTargetView,
+  withPortWait
 } from "@shared/run";
 import { describeForeign, type PortOwnership } from "@shared/port-owner";
 import type { PortSweepResult, PortSweepScan } from "@shared/port-sweep";
@@ -396,6 +397,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
           // 有 port 的服務：記得 port、記錄檔有、或固定 port；桌面類服務可能留有殘留程序，一律可按。
           releasable:
             isDesktopLike(spec) ||
+            (!spec.port && state === "running") ||
             (spec.port && (port !== null || session?.ports[spec.name] !== undefined || recordedPorts?.[spec.name] !== undefined || spec.fixedPort !== undefined))
         };
         return {
@@ -533,9 +535,15 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
 
   /** 只有涉及桌面類服務時才找資料夾裡的殘留程序；掃描失敗當作沒有，不擋住啟動與結束。 */
   const findStale = async (target: Target, specs: readonly RunServiceSpec[]): Promise<StaleProcess[]> => {
-    if (deps.staleProcesses === undefined || !specs.some(isDesktopLike)) return [];
+    const stale = deps.staleProcesses;
+    const udids = specs.flatMap((spec) => (spec.port ? [] : [iosUdidOfCommand(spec.command)]).filter((udid): udid is string => udid !== null));
+    if (stale === undefined || !(specs.some(isDesktopLike) || udids.length > 0)) return [];
     try {
-      return await deps.staleProcesses.scan(target.folder);
+      const found = specs.some(isDesktopLike) ? await stale.scan(target.folder) : [];
+      // iOS 服務：模擬器上手動跑起來的 flutter run 也要能收掉。
+      const flutter = udids.length > 0 && stale.scanFlutterRuns !== undefined ? await stale.scanFlutterRuns(udids) : [];
+      const seen = new Set(found.map((item) => item.pid));
+      return [...found, ...flutter.filter((item) => !seen.has(item.pid))];
     } catch (error) {
       log("warn", `無法檢查 ${target.label} 的殘留程序：${error instanceof Error ? error.message : "未知錯誤"}`);
       return [];
@@ -776,7 +784,7 @@ export const createRunHandlers = (deps: RunHandlerDeps): RunHandlers => {
     const tabs: ItermTab[] = plan.starts.map((item) => ({
       dir: serviceDirectory(target.folder, item.cwd),
       name: runSessionName(target.id, item.name),
-      command: item.commandLine
+      command: withPortWait(item.commandLine, item.waitPorts)
     }));
 
     // 桌面 app 常有單一實例鎖：舊的還留在背景時，新的會被擋掉並立刻退出，所以先找殘留程序，確認後結束再啟動。

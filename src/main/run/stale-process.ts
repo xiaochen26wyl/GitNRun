@@ -1,3 +1,4 @@
+import { selectFlutterRunsOnDevices } from "@shared/ios-simulator";
 import { STALE_PS_ARGS, parseStaleRows, selectStaleProcesses, type StaleProcess } from "@shared/stale-process";
 import { execForOutput } from "@main/run/port-sweep";
 
@@ -10,6 +11,8 @@ const DEFAULT_POLL_MS = 200;
 
 export interface StaleProcesses {
   scan(folder: string): Promise<StaleProcess[]>;
+  /** 綁在這些模擬器上的 `flutter run`（手動啟動、GitNRun 已不認得的也算）。 */
+  scanFlutterRuns?(udids: readonly string[]): Promise<StaleProcess[]>;
   end(list: readonly StaleProcess[]): Promise<{ failed: StaleProcess[] }>;
 }
 
@@ -53,6 +56,13 @@ export const createStaleProcesses = (deps: StaleProcessDeps): StaleProcesses => 
       const table = await deps.exec(PS, STALE_PS_ARGS);
       if (table.code !== 0) throw new Error(table.stderr.trim().slice(0, 200) || "無法讀取程序清單");
       return selectStaleProcesses({ rows: parseStaleRows(table.stdout), folder, uid: deps.uid, selfPid: deps.selfPid });
+    },
+
+    async scanFlutterRuns(udids) {
+      if (udids.length === 0) return [];
+      const table = await deps.exec(PS, STALE_PS_ARGS);
+      if (table.code !== 0) throw new Error(table.stderr.trim().slice(0, 200) || "無法讀取程序清單");
+      return selectFlutterRunsOnDevices({ rows: parseStaleRows(table.stdout), udids, uid: deps.uid, selfPid: deps.selfPid });
     },
 
     async end(list) {

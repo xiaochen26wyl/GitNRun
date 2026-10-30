@@ -516,7 +516,7 @@ export const asConflictArgs = (args: readonly unknown[]): [number, string | unde
 /** 一般設定：只確認形狀與允許的鍵，值的細部檢查與錯誤訊息由處理器負責。 */
 export const asAppSettingsArgs = (args: readonly unknown[]): [Record<string, unknown>] | null => {
   const raw = args[0];
-  if (args.length !== 1 || !isPlainObject(raw) || !hasOnlyKeys(raw, ["retentionDays"])) {
+  if (args.length !== 1 || !isPlainObject(raw) || !hasOnlyKeys(raw, ["retentionDays", "runOrder", "runSortModes", "tabNames"])) {
     return null;
   }
   return [raw];

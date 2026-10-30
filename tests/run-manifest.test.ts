@@ -16,6 +16,8 @@ import {
   parseRunTargetId,
   mobileDeviceLabel,
   planStart,
+  PORT_WAIT_SECONDS,
+  withPortWait,
   runButtonStates,
   selectServices,
   backendGroupButtons,
@@ -293,6 +295,27 @@ describe("selectServices and planStart", () => {
     const plan = planStart(manifest, "desktop", { api: 4001 }, new Set(["api"]), [4009]);
     assert.deepEqual(plan.ports, { api: 4001, web: 4009 });
     assert.deepEqual(plan.starts.map((item) => [item.name, item.commandLine]), [["panel", "env API=http://localhost:4001 pnpm dev:desktop"]]);
+  });
+
+  it("makes services wait for the ports of the services they depend on", () => {
+    const manifest = parsed(
+      manifestOf(
+        service({ fixedPort: 8000 }),
+        service({ name: "worker", port: false, needs: ["api"] }),
+        service({ name: "web", role: "frontend", env: { PORT: "{port}" } })
+      )
+    );
+    const plan = planStart(manifest, "all", {}, new Set(), [41001]);
+    const waits = Object.fromEntries(plan.starts.map((item) => [item.name, item.waitPorts]));
+    assert.deepEqual(waits, { api: [], worker: [8000], web: [8000] });
+  });
+
+  it("prefixes the command with a bounded wait only when there are ports to wait for", () => {
+    assert.equal(withPortWait("pnpm dev", []), "pnpm dev");
+    const line = withPortWait("pnpm dev", [8000]);
+    assert.ok(line.includes("nc -z localhost 8000"));
+    assert.ok(line.includes(`-ge ${PORT_WAIT_SECONDS}`));
+    assert.ok(line.endsWith("; pnpm dev"));
   });
 
   it("fails loudly when too few fresh ports are provided", () => {

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@shared/ipc";
-import { DEFAULT_RUN_GROUP_ID, RUN_GROUPS, RUN_OTHER_GROUP, runGroupById, type RunGroupId } from "@shared/run-groups";
+import { DEFAULT_RUN_GROUP_ID, RUN_GROUPS, RUN_OTHER_GROUP, type RunGroup, MAX_TAB_NAME_CHARS, runGroupById, tabLabelOf, type RunGroupId } from "@shared/run-groups";
 import { ClaudeView } from "./ClaudeView";
 import { GeneralPanel } from "./GeneralPanel";
 import { LogsView } from "./LogsView";
@@ -8,15 +8,71 @@ import { PortSweepPanel } from "./PortSweepPanel";
 import { RunDataProvider, useRunData } from "./RunDataContext";
 import { RunView } from "./RunView";
 import { SecretsPanel } from "./SecretsPanel";
+import { ViewPrefsProvider, useViewPrefs } from "./ViewPrefsContext";
 import logo from "./assets/logo.png";
 
 type Tab = RunGroupId | "claude" | "settings";
 
 export const App = () => (
-  <RunDataProvider>
-    <AppBody />
-  </RunDataProvider>
+  <ViewPrefsProvider>
+    <RunDataProvider>
+      <AppBody />
+    </RunDataProvider>
+  </ViewPrefsProvider>
 );
+
+/** 頁籤標題：雙擊就地改名，Enter／失焦確認，Esc 取消，清空還原預設名稱。 */
+const GroupTab = ({ group, active, onSelect }: { group: RunGroup; active: boolean; onSelect: () => void }) => {
+  const { tabNames, save } = useViewPrefs();
+  const [draft, setDraft] = useState<string | null>(null);
+  // 結束編輯後輸入框卸載會再觸發一次 blur；用 ref 擋掉，避免 Esc 取消後又被存下。
+  const editing = useRef(false);
+  const label = tabLabelOf(group, tabNames);
+
+  const finish = () => {
+    editing.current = false;
+    setDraft(null);
+  };
+
+  const commit = () => {
+    if (draft === null || !editing.current) return;
+    const name = draft.trim();
+    finish();
+    if (name === label || (name === "" && label === group.label)) return;
+    const { [group.id]: _removed, ...rest } = tabNames;
+    save({ tabNames: name === "" ? rest : { ...rest, [group.id]: name } });
+  };
+
+  if (draft !== null) {
+    return (
+      <input
+        className="tab-rename"
+        autoFocus
+        value={draft}
+        maxLength={MAX_TAB_NAME_CHARS}
+        placeholder={group.label}
+        aria-label="頁籤名稱"
+        size={Math.max(4, Array.from(draft).length + 1)}
+        onChange={(event) => setDraft(event.target.value)}
+        onFocus={(event) => event.target.select()}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") finish();
+        }}
+      />
+    );
+  }
+  return (
+    <button type="button" className={active ? "active" : ""} title="雙擊可改名" onClick={onSelect} onDoubleClick={() => {
+        if (group.id === "other") return;
+        editing.current = true;
+        setDraft(label);
+      }}>
+      {label}
+    </button>
+  );
+};
 
 const AppBody = () => {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -44,9 +100,7 @@ const AppBody = () => {
         </div>
         <nav className="tabs" aria-label="主頁籤">
           {runGroups.map((group) => (
-            <button key={group.id} type="button" className={tab === group.id ? "active" : ""} onClick={() => setTab(group.id)}>
-              {group.label}
-            </button>
+            <GroupTab key={group.id} group={group} active={tab === group.id} onSelect={() => setTab(group.id)} />
           ))}
           <button type="button" className={tab === "claude" ? "active" : ""} onClick={() => setTab("claude")}>
             Claude
